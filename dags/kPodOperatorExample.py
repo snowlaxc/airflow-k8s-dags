@@ -9,6 +9,7 @@ Kubernetes Pod Operator를 사용한 데이터 처리 파이프라인 예제
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
+from airflow.providers.cncf.kubernetes.kube_client.models import V1ResourceRequirements
 from airflow.operators.dummy import DummyOperator
 from kubernetes.client import models as k8s
 
@@ -44,6 +45,17 @@ volume_mount_config = {
     'sub_path': None,
     'read_only': False
 }
+
+resources = k8s.V1ResourceRequirements(
+    requests = {
+        'cpu': '500m',
+        'memory': '512Mi'
+    },
+    limits = {
+        'cpu': '1000m',
+        'memory': '1Gi'
+    }
+)
 
 # DAG 정의
 dag = DAG(
@@ -97,10 +109,7 @@ print(f"데이터 수집 완료: {num_records}개 레코드가 {output_path}에 
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    request_cpu='500m',
-    request_memory='512Mi',
-    limit_cpu='1000m',
-    limit_memory='1Gi',
+    container_resources = resources,
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
@@ -163,10 +172,7 @@ preprocess_data = KubernetesPodOperator(
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    request_cpu='500m',
-    request_memory='512Mi',
-    limit_cpu='1000m',
-    limit_memory='1Gi',
+    container_resources = resources,
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
@@ -239,10 +245,7 @@ analyze_data = KubernetesPodOperator(
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    request_cpu='500m',
-    request_memory='512Mi',
-    limit_cpu='1000m',
-    limit_memory='1Gi',
+    container_resources = resources,
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
@@ -313,10 +316,7 @@ store_results = KubernetesPodOperator(
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    request_cpu='500m',
-    request_memory='512Mi',
-    limit_cpu='1000m',
-    limit_memory='1Gi',
+    container_resources = resources,
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
