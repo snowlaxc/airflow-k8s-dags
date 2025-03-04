@@ -46,8 +46,8 @@ volume_mount_config = {
 }
 
 resources = {
-    'cpu': '500m',
-    'memory': '512Mi',
+    'request_cpu': '500m',
+    'request_memory': '512Mi',
     'limit_cpu': '1000m',
     'limit_memory': '1Gi'
 }
