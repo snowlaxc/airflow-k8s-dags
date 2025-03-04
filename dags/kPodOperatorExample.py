@@ -45,17 +45,6 @@ volume_mount_config = {
     'read_only': False
 }
 
-resources = {
-    'requests': {
-        'cpu': '500m',
-        'memory': '512Mi'
-    },
-    'limits': {
-        'cpu': '1000m',
-        'memory': '1Gi'
-    }
-}
-
 # DAG 정의
 dag = DAG(
     'k8s_data_pipeline',
@@ -108,7 +97,10 @@ print(f"데이터 수집 완료: {num_records}개 레코드가 {output_path}에 
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    resources=resources,
+    request_cpu='500m',
+    request_memory='512Mi',
+    limit_cpu='1000m',
+    limit_memory='1Gi',
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
@@ -171,7 +163,10 @@ preprocess_data = KubernetesPodOperator(
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    resources=resources,
+    request_cpu='500m',
+    request_memory='512Mi',
+    limit_cpu='1000m',
+    limit_memory='1Gi',
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
@@ -244,7 +239,10 @@ analyze_data = KubernetesPodOperator(
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    resources=resources,
+    request_cpu='500m',
+    request_memory='512Mi',
+    limit_cpu='1000m',
+    limit_memory='1Gi',
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
@@ -315,7 +313,10 @@ store_results = KubernetesPodOperator(
     env_vars=env_vars,
     volumes=[volume_config],
     volume_mounts=[volume_mount_config],
-    resources=resources,
+    request_cpu='500m',
+    request_memory='512Mi',
+    limit_cpu='1000m',
+    limit_memory='1Gi',
     is_delete_operator_pod=True,
     in_cluster=True,
     get_logs=True,
