@@ -45,11 +45,12 @@ volume_mount_config = {
     'read_only': False
 }
 
-# 리소스 설정
-resources = k8s.V1ResourceRequirements(
-    requests={'cpu': '500m', 'memory': '512Mi'},
-    limits={'cpu': '1000m', 'memory': '1Gi'}
-)
+resources = {
+    "request_cpu": "500m",
+    "request_memory": "512Mi",
+    "limit_cpu": "1000m",
+    "limit_memory": "1Gi"
+}
 
 # DAG 정의
 dag = DAG(
