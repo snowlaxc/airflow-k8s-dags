@@ -9,7 +9,6 @@ Kubernetes Pod Operator를 사용한 데이터 처리 파이프라인 예제
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
-from kubernetes.client.models import V1ResourceRequirements
 from airflow.operators.dummy import DummyOperator
 from kubernetes.client import models as k8s
 
@@ -32,21 +31,21 @@ env_vars = [
 ]
 
 # 공통으로 사용할 볼륨 설정
-volume_config = {
-    'persistent_volume_claim': {
-        'claim_name': 'data-processing-pvc'  # PVC 이름 (미리 생성 필요)
-    },
-    'name': 'data-volume'
-}
+volume_config = k8s.V1Volume(
+    name='data-volume',
+    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(
+        claim_name='data-processing-pvc'  # PVC 이름 (미리 생성 필요)
+    )
+)
 
-volume_mount_config = {
-    'name': 'data-volume',
-    'mount_path': '/data',
-    'sub_path': None,
-    'read_only': False
-}
+volume_mount_config = k8s.V1VolumeMount(
+    name='data-volume',
+    mount_path='/data',
+    sub_path=None,
+    read_only=False
+)
 
-resources = V1ResourceRequirements(
+resources = k8s.V1ResourceRequirements(
     requests = {
         'cpu': '500m',
         'memory': '512Mi'
