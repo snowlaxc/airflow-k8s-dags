@@ -46,10 +46,14 @@ volume_mount_config = {
 }
 
 resources = {
-    'request_cpu': '500m',
-    'request_memory': '512Mi',
-    'limit_cpu': '1000m',
-    'limit_memory': '1Gi'
+    'requests': {
+        'cpu': '500m',
+        'memory': '512Mi'
+    },
+    'limits': {
+        'cpu': '1000m',
+        'memory': '1Gi'
+    }
 }
 
 # DAG 정의
