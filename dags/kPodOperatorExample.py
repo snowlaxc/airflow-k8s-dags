@@ -9,7 +9,7 @@ Kubernetes Pod Operator를 사용한 데이터 처리 파이프라인 예제
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
-from airflow.providers.cncf.kubernetes.kube_client.models import V1ResourceRequirements
+from kubernetes.client.models import V1ResourceRequirements
 from airflow.operators.dummy import DummyOperator
 from kubernetes.client import models as k8s
 
@@ -46,7 +46,7 @@ volume_mount_config = {
     'read_only': False
 }
 
-resources = k8s.V1ResourceRequirements(
+resources = V1ResourceRequirements(
     requests = {
         'cpu': '500m',
         'memory': '512Mi'
