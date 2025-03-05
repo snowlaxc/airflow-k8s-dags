@@ -58,7 +58,7 @@ git_sync_volume_config = k8s.V1Volume(
 
 git_sync_volume_mount = k8s.V1VolumeMount(
     name = 'git-sync-volume',
-    mount_path = GIT_SYNC_PATH,
+    mount_path = '/opt/airflow/dags',
     sub_path = None,
     read_only = False
 )
