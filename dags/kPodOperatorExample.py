@@ -12,6 +12,9 @@ from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import Kubernete
 from airflow.operators.dummy import DummyOperator
 from kubernetes.client import models as k8s
 
+GIT_SYNC_PATH = '/opt/airflow/dags'
+SCRIPT_PATH = f'{GIT_SYNC_PATH}/scripts'
+
 # 기본 인자 설정
 default_args = {
     'owner': 'data_team',
@@ -46,6 +49,21 @@ data_volume_mount = k8s.V1VolumeMount(
     read_only=False
 )
 
+git_sync_volume_config = k8s.V1Volume(
+    name='git-sync-volume',
+    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(
+        claim_name='airflow-dags-pvc'
+    )
+)
+
+git_sync_volume_mount = k8s.V1VolumeMount(
+    name = 'git-sync-volume',
+    mount_path = GIT_SYNC_PATH,
+    sub_path = None,
+    read_only = False
+)
+
+
 resources = k8s.V1ResourceRequirements(
     requests = {
         'cpu': '500m',
@@ -77,10 +95,10 @@ collect_data = KubernetesPodOperator(
     namespace='airflow',
     image='python:3.9-slim',
     cmds=["bash", "-c"],
-    arguments=["chmod +x /opt/airflow/dags/repo/scripts/collect_data.py && pip install pandas && python /opt/airflow/dags/repo/scripts/collect_data.py"],
+    arguments=["pip install pandas && python /repo/scripts/collect_data.py"],
     env_vars=env_vars,
-    volumes=[data_volume_config],
-    volume_mounts=[data_volume_mount],
+    volumes=[data_volume_config, git_sync_volume_config],
+    volume_mounts=[data_volume_mount, git_sync_volume_mount],
     container_resources = resources,
     execution_timeout = timedelta(minutes=10),
     is_delete_operator_pod=True,
@@ -97,10 +115,10 @@ preprocess_data = KubernetesPodOperator(
     namespace='airflow',
     image='python:3.9-slim',
     cmds=["bash", "-c"],
-    arguments=["chmod +x /opt/airflow/dags/repo/scripts/preprocess_data.py && pip install pandas scikit-learn numpy && python /opt/airflow/dags/repo/scripts/preprocess_data.py"],
+    arguments=["pip install pandas scikit-learn numpy && python /repo/scripts/preprocess_data.py"],
     env_vars=env_vars,
-    volumes=[data_volume_config],
-    volume_mounts=[data_volume_mount],
+    volumes=[data_volume_config, git_sync_volume_config],
+    volume_mounts=[data_volume_mount, git_sync_volume_mount],
     container_resources = resources,
     execution_timeout = timedelta(minutes=10),
     is_delete_operator_pod=True,
@@ -117,10 +135,10 @@ analyze_data = KubernetesPodOperator(
     namespace='airflow',
     image='python:3.9-slim',
     cmds=["bash", "-c"],
-    arguments=["chmod +x /opt/airflow/dags/repo/scripts/analyze_data.py && pip install pandas matplotlib seaborn numpy && python /opt/airflow/dags/repo/scripts/analyze_data.py"],
+    arguments=["pip install pandas matplotlib seaborn numpy && python /repo/scripts/analyze_data.py"],
     env_vars=env_vars,
-    volumes=[data_volume_config],
-    volume_mounts=[data_volume_mount],
+    volumes=[data_volume_config, git_sync_volume_config],
+    volume_mounts=[data_volume_mount, git_sync_volume_mount],
     container_resources = resources,
     execution_timeout = timedelta(minutes=10),
     is_delete_operator_pod=True,
@@ -137,10 +155,10 @@ store_results = KubernetesPodOperator(
     namespace='airflow',
     image='python:3.9-slim',
     cmds=["bash", "-c"],
-    arguments=["chmod +x /opt/airflow/dags/repo/scripts/store_results.py && pip install pandas && python /opt/airflow/dags/repo/scripts/store_results.py"],
+    arguments=["pip install pandas && python /repo/scripts/store_results.py"],
     env_vars=env_vars,
-    volumes=[data_volume_config],
-    volume_mounts=[data_volume_mount],
+    volumes=[data_volume_config, git_sync_volume_config],
+    volume_mounts=[data_volume_mount, git_sync_volume_mount],
     container_resources = resources,
     execution_timeout = timedelta(minutes=10),
     is_delete_operator_pod=True,
