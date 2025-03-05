@@ -52,7 +52,7 @@ data_volume_mount = k8s.V1VolumeMount(
 git_sync_volume_config = k8s.V1Volume(
     name='git-sync-volume',
     persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(
-        claim_name='airflow-dags-pvc'
+        claim_name='airflow-dags'
     )
 )
 
