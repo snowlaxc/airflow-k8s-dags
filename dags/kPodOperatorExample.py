@@ -12,7 +12,7 @@ from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import Kubernete
 from airflow.operators.dummy import DummyOperator
 from kubernetes.client import models as k8s
 
-GIT_SYNC_PATH = '/opt/airflow/dags'
+GIT_SYNC_PATH = '/opt/airflow/dags/repo'
 SCRIPT_PATH = f'{GIT_SYNC_PATH}/scripts'
 
 # 기본 인자 설정
