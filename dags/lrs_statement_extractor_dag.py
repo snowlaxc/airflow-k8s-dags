@@ -39,9 +39,9 @@ def lrs_statement_extractor():
         task_id='get_type',
         postgres_conn_id='lrs-connection',
         sql="""
-            SELECT extra->'sys_type' as type
+            SELECT extra::json->>'sys_type' as type
             FROM {{ conn['lrs-connection'].extra.schema }}.lrs_statement
-            WHERE extra->'sys_type' IS NOT NULL
+            WHERE extra::json->>'sys_type' IS NOT NULL
             LIMIT 1;
         """
     )
@@ -51,9 +51,9 @@ def lrs_statement_extractor():
         task_id='get_columns',
         postgres_conn_id='lrs-connection',
         sql="""
-            SELECT extra->'column' as columns
+            SELECT extra::json->>'column' as columns
             FROM {{ conn['lrs-connection'].extra.schema }}.lrs_statement
-            WHERE extra->'column' IS NOT NULL
+            WHERE extra::json->>'column' IS NOT NULL
             LIMIT 1;
         """
     )
@@ -63,7 +63,7 @@ def lrs_statement_extractor():
         if not type_result:
             raise ValueError("No type information found in the table")
             
-        type_value = json.loads(type_result[0][0])
+        type_value = type_result[0][0]
         if not isinstance(type_value, str):
             raise ValueError("Type information is not in the expected format")
             
