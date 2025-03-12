@@ -73,7 +73,6 @@ with DAG(
                     "limit_cpu": "1",
                     "labels": {"purpose": "data-extraction"},
                     "annotations": {"sidecar.istio.io/inject": "false"},
-                    "node_selectors": {"node-type": "data-processing"},
                 }
             }
         )
