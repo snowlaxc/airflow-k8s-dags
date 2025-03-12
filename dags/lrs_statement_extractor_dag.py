@@ -40,7 +40,7 @@ def lrs_statement_extractor():
         postgres_conn_id='lrs-connection',
         sql="""
             SELECT extra::json->>'sys_type' as type
-            FROM {{ conn['lrs-connection'].extra.schema }}.lrs_statement
+            FROM {{ conn['lrs-connection'].extra__schema }}.lrs_statement
             WHERE extra::json->>'sys_type' IS NOT NULL
             LIMIT 1;
         """
@@ -52,7 +52,7 @@ def lrs_statement_extractor():
         postgres_conn_id='lrs-connection',
         sql="""
             SELECT extra::json->>'column' as columns
-            FROM {{ conn['lrs-connection'].extra.schema }}.lrs_statement
+            FROM {{ conn['lrs-connection'].extra__schema }}.lrs_statement
             WHERE extra::json->>'column' IS NOT NULL
             LIMIT 1;
         """
@@ -90,7 +90,7 @@ def lrs_statement_extractor():
         column_list = ', '.join(columns)
         return f"""
             SELECT {column_list}
-            FROM {{{{ conn['lrs-connection'].extra.schema }}}}.lrs_statement
+            FROM {{{{ conn['lrs-connection'].extra__schema }}}}.lrs_statement
             WHERE id > {{{{ task_instance.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0 }}}}
             ORDER BY id ASC
             LIMIT 500;
