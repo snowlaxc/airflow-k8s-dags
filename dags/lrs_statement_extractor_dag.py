@@ -40,7 +40,7 @@ def lrs_statement_extractor():
         postgres_conn_id='lrs-connection',
         sql="""
             SELECT extra::json->>'sys_type' as type
-            FROM {{ conn['lrs-connection'].schema }}.lrs_statement
+            FROM {{ conn['lrs-connection'].extra | tojson }}::json->>'schema' }}.lrs_statement
             WHERE extra::json->>'sys_type' IS NOT NULL
             LIMIT 1;
         """
@@ -52,11 +52,22 @@ def lrs_statement_extractor():
         postgres_conn_id='lrs-connection',
         sql="""
             SELECT extra::json->>'column' as columns
-            FROM {{ conn['lrs-connection'].schema }}.lrs_statement
+            FROM {{ conn['lrs-connection'].extra | tojson }}::json->>'schema' }}.lrs_statement
             WHERE extra::json->>'column' IS NOT NULL
             LIMIT 1;
         """
     )
+
+    @task
+    def create_select_query(columns: List[str]) -> str:
+        column_list = ', '.join(columns)
+        return f"""
+            SELECT {column_list}
+            FROM {{{{ conn['lrs-connection'].extra | tojson }}::json->>'schema' }}}}.lrs_statement
+            WHERE id > {{{{ task_instance.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0 }}}}
+            ORDER BY id ASC
+            LIMIT 500;
+        """
 
     @task
     def prepare_base_path(type_result: List[Any]) -> str:
@@ -75,9 +86,15 @@ def lrs_statement_extractor():
         if not columns_result:
             raise ValueError("No column information found in the table")
             
-        columns = json.loads(columns_result[0][0])
-        if not isinstance(columns, list):
-            raise ValueError("Column information is not in the expected format")
+        try:
+            columns = json.loads(columns_result[0][0])
+            if not isinstance(columns, list):
+                raise ValueError("Column information is not in the expected format")
+        except json.JSONDecodeError:
+            # 이미 리스트 형태로 반환된 경우
+            columns = columns_result[0][0]
+            if not isinstance(columns, list):
+                raise ValueError("Column information is not in the expected format")
             
         # 필수 컬럼이 포함되어 있는지 확인
         if not REQUIRED_COLUMNS.issubset(set(columns)):
@@ -85,17 +102,6 @@ def lrs_statement_extractor():
             
         return columns
     
-    @task
-    def create_select_query(columns: List[str]) -> str:
-        column_list = ', '.join(columns)
-        return f"""
-            SELECT {column_list}
-            FROM {{{{ conn['lrs-connection'].schema }}}}.lrs_statement
-            WHERE id > {{{{ task_instance.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0 }}}}
-            ORDER BY id ASC
-            LIMIT 500;
-        """
-
     @task
     def process_results(query_results: List[Any], columns: List[str], base_path: str) -> int:
         if not query_results:
