@@ -28,7 +28,7 @@ REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 )
 def lrs_statement_extractor():
     
-    # 저장 폴더 경로 가져오기
+    # 저장 경로 가져오기
     save_folder_path = Variable.get(
         "SAVE_FOLDER_PATH", 
         default_var=str(Path.home())  # 기본값으로 홈 디렉토리 사용
@@ -46,20 +46,6 @@ def lrs_statement_extractor():
         """
     )
 
-    @task
-    def prepare_base_path(type_result, save_folder_path: str) -> str:
-        if not type_result:
-            raise ValueError("No type information found in the table")
-            
-        type_value = json.loads(type_result[0][0])
-        if not isinstance(type_value, str):
-            raise ValueError("Type information is not in the expected format")
-            
-        # LRS 저장 경로 설정
-        return str(Path(save_folder_path) / type_value)
-    
-    base_path = prepare_base_path(get_type.output, save_folder_path)
-    
     # 컬럼 정보 조회
     get_columns = PostgresOperator(
         task_id='get_columns',
@@ -71,6 +57,18 @@ def lrs_statement_extractor():
             LIMIT 1;
         """
     )
+
+    @task
+    def prepare_base_path(type_result, save_folder_path: str) -> str:
+        if not type_result:
+            raise ValueError("No type information found in the table")
+            
+        type_value = json.loads(type_result[0][0])
+        if not isinstance(type_value, str):
+            raise ValueError("Type information is not in the expected format")
+            
+        # LRS 저장 경로 설정
+        return str(Path(save_folder_path) / type_value)
     
     @task
     def prepare_columns(columns_result) -> List[str]:
@@ -87,8 +85,6 @@ def lrs_statement_extractor():
             
         return columns
     
-    columns = prepare_columns(get_columns.output)
-    
     @task
     def create_select_query(columns: List[str]) -> str:
         column_list = ', '.join(columns)
@@ -99,14 +95,6 @@ def lrs_statement_extractor():
             ORDER BY id ASC
             LIMIT 500;
         """
-    
-    select_query = create_select_query(columns)
-    
-    extract_statements = PostgresOperator(
-        task_id='extract_statements',
-        postgres_conn_id='lrs-connection',
-        sql="{{ task_instance.xcom_pull(task_ids='create_select_query', key='return_value') }}"
-    )
 
     @task
     def process_results(query_results, columns: List[str], base_path: str):
@@ -141,14 +129,28 @@ def lrs_statement_extractor():
         
         return max_id
 
-    # Task 의존성 설정
-    max_id = process_results(extract_statements.output, columns, base_path)
-    
     @task
     def update_last_processed_id(max_id):
         if max_id and max_id > 0:
             return max_id
+
+    # Task 의존성 설정
+    base_path = prepare_base_path(get_type.output, save_folder_path)
+    columns = prepare_columns(get_columns.output)
+    select_query = create_select_query(columns)
     
-    update_last_processed_id(max_id)
+    extract_statements = PostgresOperator(
+        task_id='extract_statements',
+        postgres_conn_id='lrs-connection',
+        sql="{{ task_instance.xcom_pull(task_ids='create_select_query', key='return_value') }}"
+    )
+    
+    max_id = process_results(extract_statements.output, columns, base_path)
+    last_id = update_last_processed_id(max_id)
+
+    # Chain tasks
+    get_type >> prepare_base_path
+    get_columns >> prepare_columns >> create_select_query >> extract_statements
+    extract_statements >> process_results >> update_last_processed_id
 
 dag = lrs_statement_extractor()
