@@ -5,7 +5,7 @@ from airflow.models import Variable
 import json
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 default_args = {
     'owner': 'airflow',
@@ -59,7 +59,7 @@ def lrs_statement_extractor():
     )
 
     @task
-    def prepare_base_path(type_result, save_folder_path: str) -> str:
+    def prepare_base_path(type_result: List[Any]) -> str:
         if not type_result:
             raise ValueError("No type information found in the table")
             
@@ -71,7 +71,7 @@ def lrs_statement_extractor():
         return str(Path(save_folder_path) / type_value)
     
     @task
-    def prepare_columns(columns_result) -> List[str]:
+    def prepare_columns(columns_result: List[Any]) -> List[str]:
         if not columns_result:
             raise ValueError("No column information found in the table")
             
@@ -97,9 +97,9 @@ def lrs_statement_extractor():
         """
 
     @task
-    def process_results(query_results, columns: List[str], base_path: str):
+    def process_results(query_results: List[Any], columns: List[str], base_path: str) -> int:
         if not query_results:
-            return
+            return 0
         
         max_id = 0
         for row in query_results:
@@ -130,27 +130,23 @@ def lrs_statement_extractor():
         return max_id
 
     @task
-    def update_last_processed_id(max_id):
+    def update_last_processed_id(max_id: int) -> int:
         if max_id and max_id > 0:
             return max_id
+        return 0
 
     # Task 의존성 설정
-    base_path = prepare_base_path(get_type.output, save_folder_path)
+    base_path = prepare_base_path(get_type.output)
     columns = prepare_columns(get_columns.output)
     select_query = create_select_query(columns)
     
     extract_statements = PostgresOperator(
         task_id='extract_statements',
         postgres_conn_id='lrs-connection',
-        sql="{{ task_instance.xcom_pull(task_ids='create_select_query', key='return_value') }}"
+        sql=select_query
     )
     
     max_id = process_results(extract_statements.output, columns, base_path)
-    last_id = update_last_processed_id(max_id)
-
-    # Chain tasks
-    get_type >> prepare_base_path
-    get_columns >> prepare_columns >> create_select_query >> extract_statements
-    extract_statements >> process_results >> update_last_processed_id
+    update_last_processed_id(max_id)
 
 dag = lrs_statement_extractor()
