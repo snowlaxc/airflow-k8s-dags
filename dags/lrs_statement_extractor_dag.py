@@ -156,7 +156,10 @@ def lrs_statement_extractor():
         if not query_results:
             return 0
         
+        # 마지막 ID 값 초기화
         max_id = 0
+        
+        # 결과 처리
         for row in query_results:
             row_dict = {
                 col: row[idx] if not isinstance(row[idx], datetime) else row[idx]
@@ -191,18 +194,29 @@ def lrs_statement_extractor():
             output_dir = Path(base_path) / month / day
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            statement_id = statement_data.get('statement_id', f"unknown_{max_id}")
+            statement_id = statement_data.get('statement_id', f"unknown_{len(query_results)}")
             file_path = output_dir / f"{statement_id}.json"
             with open(file_path, 'w') as f:
                 json.dump(statement_data, f, indent=2)
-            
-            max_id = max(max_id, statement_data.get('id', 0))
         
+        # 결과가 ID 기준 오름차순 정렬되어 있으므로 마지막 행의 ID가 최대값
+        if query_results:
+            last_row = query_results[-1]
+            id_index = columns.index('id') if 'id' in columns else -1
+            if id_index >= 0 and id_index < len(last_row):
+                max_id = last_row[id_index]
+        
+        print(f"마지막 ID 값: {max_id}")
         return max_id
 
     @task
     def update_last_processed_id(max_id: int, **context) -> int:
+        """
+        처리된 결과 중 가장 큰 ID 값을 저장합니다.
+        이 값은 다음 실행 시 이 ID보다 큰 데이터만 조회하는 데 사용됩니다.
+        """
         if max_id and max_id > 0:
+            print(f"마지막으로 처리된 ID: {max_id}")
             return max_id
         return 0
 
