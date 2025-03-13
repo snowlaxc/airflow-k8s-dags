@@ -23,6 +23,7 @@ import logging
       "timestamp"
     ]
 }
+3. lrs_last_id = 0
 
 # Airflow Connection 설정 예시
 conn_id = lrs_connection
@@ -39,7 +40,7 @@ port = 5432
 POSTGRES_CONN_ID = 'lrs_connection'
 LRS_METADATA_VARIABLE = 'lrs_connection_meta'
 SAVE_FOLDER_VARIABLE = 'save_folder_path'
-LAST_PROCESSED_ID_VARIABLE = 'lrs_last_processed_id'
+LAST_PROCESSED_ID_VARIABLE = 'lrs_last_id'
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
 default_args = {
