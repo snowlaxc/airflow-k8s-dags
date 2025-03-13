@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from airflow.decorators import dag, task
-from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.models import Variable
 import json
 import os
@@ -35,29 +35,29 @@ def lrs_statement_extractor():
     )
 
     # type 정보 조회
-    get_type = PostgresOperator(
+    get_type = SQLExecuteQueryOperator(
         task_id='get_type',
-        postgres_conn_id='lrs_connection',
-        hook_params={'options': '-c search_path=acid'},
+        conn_id='lrs_connection',
         sql="""
             SELECT extra::json->'metadata'->>'sys_type' as type
             FROM lrs_statement
             WHERE extra::json->'metadata'->>'sys_type' IS NOT NULL
             LIMIT 1;
-        """
+        """,
+        hook_params={'schema': 'acid'}
     )
 
     # 컬럼 정보 조회
-    get_columns = PostgresOperator(
+    get_columns = SQLExecuteQueryOperator(
         task_id='get_columns',
-        postgres_conn_id='lrs_connection',
-        hook_params={'options': '-c search_path=acid'},
+        conn_id='lrs_connection',
         sql="""
             SELECT extra::json->'metadata'->>'column' as columns
             FROM lrs_statement
             WHERE extra::json->'metadata'->>'column' IS NOT NULL
             LIMIT 1;
-        """
+        """,
+        hook_params={'schema': 'acid'}
     )
 
     @task
@@ -148,11 +148,11 @@ def lrs_statement_extractor():
     columns = prepare_columns(get_columns.output)
     select_query = create_select_query(columns)
     
-    extract_statements = PostgresOperator(
+    extract_statements = SQLExecuteQueryOperator(
         task_id='extract_statements',
-        postgres_conn_id='lrs_connection',
-        hook_params={'options': '-c search_path=acid'},
-        sql=select_query
+        conn_id='lrs_connection',
+        sql=select_query,
+        hook_params={'schema': 'acid'}
     )
     
     max_id = process_results(extract_statements.output, columns, base_path)
