@@ -5,7 +5,39 @@ from airflow.models import Variable
 import json
 import os
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
+import logging
+
+"""
+
+# Airflow 변수 설정 예시
+1. save_folder_path = /data
+2. lrs_connection_meta = {
+    "sys_type": "lrs",
+    "schema": "acid",
+    "column": [
+      "id",
+      "statement_id",
+      "full_statement",
+      "timestamp"
+    ]
+}
+
+# Airflow Connection 설정 예시
+conn_id = lrs_connection
+conn_type = Postgres
+host = 192.168.0.114
+schema = acid
+login = acid
+password = test1234
+port = 5432
+
+"""
+
+# 상수 정의
+POSTGRES_CONN_ID = 'lrs_connection'
+LRS_METADATA_VARIABLE = 'lrs_connection_meta'
+SAVE_FOLDER_VARIABLE = 'save_folder_path'
 
 default_args = {
     'owner': 'airflow',
@@ -20,30 +52,49 @@ default_args = {
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
 @task
-def execute_sql(sql: str, conn_id: str = 'lrs_connection', **context) -> List[Any]:
+def execute_sql(sql: str, conn_id: str = POSTGRES_CONN_ID, **context) -> List[Any]:
+    """SQL 쿼리를 실행하고 결과를 반환합니다."""
     hook = PostgresHook(postgres_conn_id=conn_id)
     
+    # Connection 정보 확인
+    try:
+        conn = hook.get_connection(conn_id)
+    except Exception as e:
+        raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
+    
     # schema 정보 가져오기
-    conn = hook.get_connection(conn_id)
     schema = conn.schema
     if not schema:
-        # Variable에서 schema 정보 가져오기
         metadata = get_connection_metadata_from_variable()
         schema = metadata.get('schema')
         if not schema:
             raise ValueError("schema 정보를 찾을 수 없습니다.")
     
-    # SQL 쿼리에 schema 적용
     sql = sql.format(schema=schema)
-    
     return hook.get_records(sql)
 
+@task
 def get_connection_metadata_from_variable() -> Dict:
     """Variable에서 metadata 정보를 가져옵니다."""
-    metadata_json = Variable.get("lrs_connection_meta", default_var="{}")
-    metadata = json.loads(metadata_json)
+    try:
+        metadata_json = Variable.get(LRS_METADATA_VARIABLE)
+    except Exception as e:
+        raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'를 찾을 수 없습니다: {str(e)}")
+    
+    try:
+        metadata = json.loads(metadata_json)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'의 JSON 형식이 올바르지 않습니다: {str(e)}")
+    
     if not metadata:
-        raise ValueError("Variable 'lrs_connection_meta'에 정보가 없습니다.")
+        raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 정보가 없습니다.")
+    
+    # 필수 메타데이터 확인
+    required_metadata = ['sys_type', 'schema', 'table', 'column']
+    for field in required_metadata:
+        if field not in metadata:
+            raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 '{field}' 정보가 없습니다.")
+    
     return metadata
 
 @dag(
@@ -54,43 +105,48 @@ def get_connection_metadata_from_variable() -> Dict:
     catchup=False
 )
 def lrs_statement_extractor():
-    
     # 저장 경로 가져오기
-    save_folder_path = Variable.get(
-        "SAVE_FOLDER_PATH", 
-        default_var=str(Path.home())  # 기본값으로 홈 디렉토리 사용
-    )
+    try:
+        save_folder_path = Variable.get(SAVE_FOLDER_VARIABLE)
+    except Exception as e:
+        raise ValueError(f"Variable '{SAVE_FOLDER_VARIABLE}'를 찾을 수 없습니다: {str(e)}")
 
     # Variable에서 metadata 정보 가져오기
     connection_metadata = get_connection_metadata_from_variable()
     
-    # 테이블 구조 확인
-    get_table_info = execute_sql("""
-        SELECT column_name, data_type 
-        FROM information_schema.columns 
-        WHERE table_schema = '{schema}' AND table_name = 'lrs_statement';
-    """)
+    # 테이블 이름 가져오기
+    table_name = connection_metadata.get('table')
     
-    # Variable의 metadata에서 type 정보 가져오기
     @task
-    def get_type_info(metadata: Dict, **context) -> List[Any]:
+    def get_table_info(conn_id: str = POSTGRES_CONN_ID) -> List[Any]:
+        """테이블 구조 정보를 가져옵니다."""
+        sql = f"""
+            SELECT column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_schema = '{{schema}}' AND table_name = '{table_name}';
+        """
+        return execute_sql(sql, conn_id=conn_id)
+    
+    @task
+    def get_type_info(metadata: Dict, **context) -> str:
+        """Variable의 metadata에서 type 정보를 가져옵니다."""
         sys_type = metadata.get('sys_type')
         if not sys_type:
-            raise ValueError("Variable 'lrs_connection_meta'에 'sys_type' 정보가 없습니다.")
-        print(f"Using sys_type: {sys_type}")
-        return [[sys_type]]
+            raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 'sys_type' 정보가 없습니다.")
+        logging.info(f"Using sys_type: {sys_type}")
+        return sys_type
     
-    # Variable의 metadata에서 컬럼 정보 가져오기
     @task
-    def get_column_info(metadata: Dict, table_info: List[Any], **context) -> List[Any]:
+    def get_column_info(metadata: Dict, table_info: List[Any], **context) -> List[str]:
+        """Variable의 metadata에서 컬럼 정보를 가져옵니다."""
         # 테이블의 실제 컬럼 이름 확인
         column_names = [col[0] for col in table_info]
-        print("Available columns:", column_names)
+        logging.info(f"Available columns: {column_names}")
         
         # metadata에서 컬럼 정보 가져오기
         columns = metadata.get('column')
         if not columns:
-            raise ValueError("Variable 'lrs_connection_meta'에 'column' 정보가 없습니다.")
+            raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 'column' 정보가 없습니다.")
         
         # 필수 컬럼이 테이블에 있는지 확인
         for col in REQUIRED_COLUMNS:
@@ -101,135 +157,245 @@ def lrs_statement_extractor():
         if not REQUIRED_COLUMNS.issubset(set(columns)):
             raise ValueError(f"필수 컬럼 {REQUIRED_COLUMNS}이 metadata의 'column' 정보에 포함되어 있지 않습니다.")
         
-        print(f"Using columns: {columns}")
-        return [[json.dumps(columns)]]
+        logging.info(f"Using columns: {columns}")
+        return columns
 
     @task
-    def create_select_query(columns: List[str], **context) -> str:
+    def get_last_processed_id(**context) -> int:
+        """마지막으로 처리된 ID를 가져옵니다."""
         ti = context['ti']
-        last_process_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
+        last_processed_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
+        return last_processed_id
+
+    @task
+    def prepare_base_path(type_value: str, **context) -> str:
+        """저장 경로를 준비합니다."""
+        if not type_value:
+            raise ValueError("타입 정보를 찾을 수 없습니다.")
+            
+        # LRS 저장 경로 설정
+        base_path = Path(save_folder_path) / type_value
         
+        # 기본 디렉토리 생성
+        base_path.mkdir(parents=True, exist_ok=True)
+        
+        return str(base_path)
+
+    @task
+    def process_statements(columns: List[str], base_path: str, last_id: int, conn_id: str = POSTGRES_CONN_ID, **context) -> Tuple[int, int, int]:
+        """
+        데이터베이스에서 직접 statement를 처리하고 JSON 파일로 저장합니다.
+        XCom을 통해 대용량 데이터를 전달하지 않고 직접 처리합니다.
+        
+        Returns:
+            Tuple[int, int, int]: (max_id, 성공 개수, 실패 개수)
+        """
+        hook = PostgresHook(postgres_conn_id=conn_id)
+        
+        # Connection 정보 확인
+        try:
+            conn = hook.get_connection(conn_id)
+        except Exception as e:
+            raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
+        
+        # schema 정보 가져오기
+        schema = conn.schema
+        if not schema:
+            metadata = get_connection_metadata_from_variable()
+            schema = metadata.get('schema')
+            if not schema:
+                raise ValueError("schema 정보를 찾을 수 없습니다.")
+        
+        # 테이블 이름 가져오기
+        metadata = get_connection_metadata_from_variable()
+        table_name = metadata.get('table')
+        
+        # 쿼리 생성
         column_list = ', '.join(columns)
-        return f"""
+        query = f"""
             SELECT {column_list}
-            FROM {{schema}}.lrs_statement
-            WHERE id > {last_process_id}
+            FROM {schema}.{table_name}
+            WHERE id > {last_id}
             ORDER BY id ASC
             LIMIT 500;
         """
-
-    @task
-    def prepare_base_path(type_result: List[Any], **context) -> str:
-        if not type_result:
-            raise ValueError("타입 정보를 찾을 수 없습니다.")
-            
-        type_value = type_result[0][0]
-        if not isinstance(type_value, str):
-            raise ValueError("타입 정보가 올바른 형식이 아닙니다.")
-            
-        # LRS 저장 경로 설정
-        return str(Path(save_folder_path) / type_value)
-    
-    @task
-    def prepare_columns(columns_result: List[Any], **context) -> List[str]:
-        if not columns_result:
-            raise ValueError("컬럼 정보를 찾을 수 없습니다.")
-            
-        try:
-            columns = json.loads(columns_result[0][0])
-            if not isinstance(columns, list):
-                raise ValueError("컬럼 정보가 올바른 형식이 아닙니다.")
-        except json.JSONDecodeError:
-            # 이미 리스트 형태로 반환된 경우
-            columns = columns_result[0][0]
-            if not isinstance(columns, list):
-                raise ValueError("컬럼 정보가 올바른 형식이 아닙니다.")
-            
-        # 필수 컬럼이 포함되어 있는지 확인
-        if not REQUIRED_COLUMNS.issubset(set(columns)):
-            raise ValueError(f"필수 컬럼 {REQUIRED_COLUMNS}이 포함되어 있지 않습니다: {columns}")
-            
-        return columns
-    
-    @task
-    def process_results(query_results: List[Any], columns: List[str], base_path: str, **context) -> int:
-        if not query_results:
-            return 0
         
-        # 마지막 ID 값 초기화
-        max_id = 0
+        # 카운터 초기화
+        error_count = 0
+        success_count = 0
+        max_id = last_id
         
-        # 결과 처리
-        for row in query_results:
-            row_dict = {
-                col: row[idx] if not isinstance(row[idx], datetime) else row[idx]
-                for idx, col in enumerate(columns)
-            }
-            
-            # timestamp를 기준으로 디렉토리 구조 생성
-            statement_timestamp = row_dict.get('timestamp')
-            if not statement_timestamp:
-                statement_timestamp = datetime.now()
+        # 데이터베이스에서 직접 데이터 가져와서 처리
+        with hook.get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query)
                 
-            # JSON 데이터 준비 (timestamp를 ISO 형식 문자열로 변환)
-            statement_data = row_dict.copy()
-            statement_data['timestamp'] = statement_timestamp.isoformat() if isinstance(statement_timestamp, datetime) else statement_timestamp
-            
-            # 날짜별 디렉토리 구조 생성
-            if isinstance(statement_timestamp, datetime):
-                month = statement_timestamp.strftime('%m')
-                day = statement_timestamp.strftime('%d')
-            else:
-                # timestamp가 문자열인 경우
-                try:
-                    dt = datetime.fromisoformat(statement_timestamp)
-                    month = dt.strftime('%m')
-                    day = dt.strftime('%d')
-                except (ValueError, TypeError):
-                    # 파싱할 수 없는 경우 현재 날짜 사용
-                    now = datetime.now()
-                    month = now.strftime('%m')
-                    day = now.strftime('%d')
-            
-            output_dir = str(base_path + "/" + month + "/" + day)
+                # 컬럼 이름 가져오기
+                column_names = [desc[0] for desc in cursor.description]
+                
+                # 결과 개수 확인
+                results = cursor.fetchall()
+                total_count = len(results)
+                
+                if not results:
+                    logging.info("처리할 데이터가 없습니다.")
+                    return last_id, 0, 0
+                
+                logging.info(f"총 {total_count}개의 데이터를 처리합니다.")
+                
+                # 결과 처리
+                for i, row in enumerate(results):
+                    try:
+                        # 데이터 딕셔너리 생성
+                        row_dict = {column_names[idx]: value for idx, value in enumerate(row)}
+                        
+                        # ID 값 업데이트
+                        row_id = row_dict.get('id')
+                        if row_id and isinstance(row_id, (int, float)) and int(row_id) > max_id:
+                            max_id = int(row_id)
+                        
+                        # statement_id(uuid) 확인
+                        statement_id = row_dict.get('statement_id')
+                        if not statement_id:
+                            logging.warning(f"statement_id가 없는 데이터 발견 (ID: {row_dict.get('id')})")
+                            error_count += 1
+                            continue
+                        
+                        # timestamp 처리
+                        statement_timestamp = row_dict.get('timestamp')
+                        if not statement_timestamp:
+                            logging.warning(f"timestamp가 없는 데이터 발견 (ID: {row_dict.get('id')}, statement_id: {statement_id})")
+                            error_count += 1
+                            continue
+                        
+                        # timestamp 파싱 시도
+                        try:
+                            if isinstance(statement_timestamp, str):
+                                datetime.fromisoformat(statement_timestamp.replace('Z', '+00:00'))
+                            # datetime 객체는 이미 유효한 timestamp이므로 추가 검증 불필요
+                        except (ValueError, TypeError):
+                            logging.warning(f"timestamp 파싱 실패 (ID: {row_dict.get('id')}, statement_id: {statement_id}, timestamp: {statement_timestamp})")
+                            error_count += 1
+                            continue
+                            
+                        # JSON 데이터 준비
+                        statement_data = row_dict.copy()
+                        statement_data['timestamp'] = statement_timestamp.isoformat() if isinstance(statement_timestamp, datetime) else statement_timestamp
+                        
+                        # 날짜별 디렉토리 구조 생성
+                        month, day = get_month_day_from_timestamp(statement_timestamp)
+                        output_dir = Path(base_path) / month / day
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # 파일 저장
+                        file_path = output_dir / f"{statement_id}.json"
+                        with open(file_path, 'w') as f:
+                            json.dump(statement_data, f, indent=2)
+                            
+                        # 성공 카운트 증가
+                        success_count += 1
+                    except Exception as e:
+                        logging.error(f"데이터 처리 중 오류 발생: {e}", exc_info=True)
+                        error_count += 1
+                        continue
+        
+        logging.info(f"마지막 ID 값: {max_id}")
+        logging.info(f"처리 결과: 총 {total_count}개 중 성공 {success_count}개, 실패 {error_count}개")
+        
+        return max_id, success_count, error_count
 
-            if os.path.exists(output_dir) == False:
-                os.makedirs(output_dir)
-            
-            statement_id = statement_data.get('statement_id', f"unknown_{len(query_results)}")
-            file_path = output_dir + "/" + f"{statement_id}.json"
-            with open(file_path, 'w') as f:
-                json.dump(statement_data, f, indent = 4)
-        
-        # 결과가 ID 기준 오름차순 정렬되어 있으므로 마지막 행의 ID가 최대값
-        if query_results:
-            last_row = query_results[-1]
-            id_index = columns.index('id') if 'id' in columns else -1
-            if id_index >= 0 and id_index < len(last_row):
-                max_id = last_row[id_index]
-        
-        print(f"마지막 ID 값: {max_id}")
-        return max_id
+    def get_month_day_from_timestamp(timestamp) -> tuple:
+        """timestamp에서 월과 일을 추출합니다."""
+        if isinstance(timestamp, datetime):
+            return timestamp.strftime('%m'), timestamp.strftime('%d')
+        else:
+            # timestamp가 문자열인 경우
+            try:
+                # ISO 형식의 'Z' 처리 (UTC 표시)
+                if isinstance(timestamp, str) and 'Z' in timestamp:
+                    timestamp = timestamp.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(timestamp)
+                return dt.strftime('%m'), dt.strftime('%d')
+            except (ValueError, TypeError):
+                # 파싱할 수 없는 경우 현재 날짜 사용
+                now = datetime.now()
+                return now.strftime('%m'), now.strftime('%d')
 
     @task
-    def update_last_processed_id(max_id: int, **context) -> int:
+    def update_last_processed_id(result_tuple: Tuple[int, int, int], **context) -> int:
         """
         처리된 결과 중 가장 큰 ID 값을 저장합니다.
         이 값은 다음 실행 시 이 ID보다 큰 데이터만 조회하는 데 사용됩니다.
         """
-        if max_id and max_id > 0:
-            print(f"마지막으로 처리된 ID: {max_id}")
+        max_id, success_count, error_count = result_tuple
+        
+        ti = context['ti']
+        last_processed_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
+        
+        if max_id > last_processed_id:
+            logging.info(f"마지막으로 처리된 ID 업데이트: {last_processed_id} -> {max_id}")
             return max_id
-        return 0
+        return last_processed_id
 
-    # Task 의존성 설정
-    base_path = prepare_base_path(get_type_info(connection_metadata))
-    columns = prepare_columns(get_column_info(connection_metadata, get_table_info))
-    select_query = create_select_query(columns)
+    @task
+    def log_processing_stats(result_tuple: Tuple[int, int, int], **context) -> None:
+        """처리 통계를 로깅합니다."""
+        max_id, success_count, error_count = result_tuple
+        total_count = success_count + error_count
+        
+        separator = "=" * 50
+        logging.info(separator)
+        logging.info("처리 완료 요약")
+        logging.info(separator)
+        logging.info(f"마지막 ID: {max_id}")
+        logging.info(f"총 처리 건수: {total_count}개")
+        
+        if total_count > 0:
+            success_rate = (success_count / total_count) * 100
+            error_rate = (error_count / total_count) * 100
+            logging.info(f"성공 건수: {success_count}개 ({success_rate:.1f}% 성공)")
+            logging.info(f"실패 건수: {error_count}개 ({error_rate:.1f}% 실패)")
+        else:
+            logging.info("성공 건수: 0개 (0.0% 성공)")
+            logging.info("실패 건수: 0개 (0.0% 실패)")
+            
+        logging.info(separator)
+        
+        # 에러 건수가 있으면 경고 메시지 출력
+        if error_count > 0:
+            logging.warning(f"경고: {error_count}개의 statement가 처리되지 않았습니다.")
+        
+        return None
+
+    # Task 인스턴스 생성
+    table_info = get_table_info()
+    type_value = get_type_info(connection_metadata)
+    base_path = prepare_base_path(type_value)
     
-    extract_statements = execute_sql(select_query)
+    columns = get_column_info(connection_metadata, table_info)
+    last_id = get_last_processed_id()
     
-    max_id = process_results(extract_statements, columns, base_path)
-    update_last_processed_id(max_id)
+    # 데이터베이스에서 직접 처리
+    process_result = process_statements(columns, base_path, last_id)
+    last_id = update_last_processed_id(process_result)
+    stats = log_processing_stats(process_result)
+    
+
+    # 메타데이터 의존성
+    connection_metadata >> type_value
+    connection_metadata >> columns
+    
+    # 테이블 정보 의존성
+    table_info >> columns
+    
+    # 타입 정보 의존성
+    type_value >> base_path
+    
+    # 쿼리 및 데이터 처리 의존성
+    columns >> process_result
+    last_id >> process_result
+    base_path >> process_result
+    process_result >> last_id
+    process_result >> stats
 
 dag = lrs_statement_extractor()
