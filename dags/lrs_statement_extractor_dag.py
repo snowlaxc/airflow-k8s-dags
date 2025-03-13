@@ -20,36 +20,30 @@ default_args = {
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
 @task
-def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
+def execute_sql(sql: str, conn_id: str = 'lrs_connection', **context) -> List[Any]:
     hook = PostgresHook(postgres_conn_id=conn_id)
-    # Connection 정보에서 metadata 제외하여 psycopg2에 전달
-    conn = hook.get_connection(conn_id)
-
-    print(type(conn.extra))
-    # extra_dict = json.loads(conn.extra) if conn.extra else {}
-    # filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
-    # conn.extra = json.dumps(filtered_extra) if filtered_extra else None
-    # hook.connection = conn
     
-    # # schema 정보 가져오기
-    # schema = conn.schema
-    # if not schema:
-    #     raise ValueError("Connection에 schema 정보가 없습니다.")
-    
-    # # SQL 쿼리에 schema 적용
-    # sql = sql.format(schema=schema)
-    return True
-    # return hook.get_records(sql)
-
-@task
-def get_connection_metadata(conn_id: str = 'lrs_connection') -> Dict:
-    """Connection의 extra 필드에서 metadata 정보를 가져옵니다."""
-    hook = PostgresHook(postgres_conn_id=conn_id)
+    # schema 정보 가져오기
     conn = hook.get_connection(conn_id)
-    extra_dict = json.loads(conn.extra) if conn.extra else {}
-    metadata = extra_dict.get('metadata')
+    schema = conn.schema
+    if not schema:
+        # Variable에서 schema 정보 가져오기
+        metadata = get_connection_metadata_from_variable()
+        schema = metadata.get('schema')
+        if not schema:
+            raise ValueError("schema 정보를 찾을 수 없습니다.")
+    
+    # SQL 쿼리에 schema 적용
+    sql = sql.format(schema=schema)
+    
+    return hook.get_records(sql)
+
+def get_connection_metadata_from_variable() -> Dict:
+    """Variable에서 metadata 정보를 가져옵니다."""
+    metadata_json = Variable.get("lrs_connection_meta", default_var="{}")
+    metadata = json.loads(metadata_json)
     if not metadata:
-        raise ValueError("Connection의 extra 필드에 'metadata' 정보가 없습니다.")
+        raise ValueError("Variable 'lrs_connection_meta'에 정보가 없습니다.")
     return metadata
 
 @dag(
@@ -67,8 +61,8 @@ def lrs_statement_extractor():
         default_var=str(Path.home())  # 기본값으로 홈 디렉토리 사용
     )
 
-    # Connection의 metadata 정보 가져오기
-    connection_metadata = get_connection_metadata()
+    # Variable에서 metadata 정보 가져오기
+    connection_metadata = get_connection_metadata_from_variable()
     
     # 테이블 구조 확인
     get_table_info = execute_sql("""
@@ -77,18 +71,18 @@ def lrs_statement_extractor():
         WHERE table_schema = '{schema}' AND table_name = 'lrs_statement';
     """)
     
-    # Connection의 metadata에서 type 정보 가져오기
+    # Variable의 metadata에서 type 정보 가져오기
     @task
-    def get_type_info(metadata: Dict) -> List[Any]:
+    def get_type_info(metadata: Dict, **context) -> List[Any]:
         sys_type = metadata.get('sys_type')
         if not sys_type:
-            raise ValueError("Connection의 metadata에 'sys_type' 정보가 없습니다.")
+            raise ValueError("Variable 'lrs_connection_meta'에 'sys_type' 정보가 없습니다.")
         print(f"Using sys_type: {sys_type}")
         return [[sys_type]]
     
-    # Connection의 metadata에서 컬럼 정보 가져오기
+    # Variable의 metadata에서 컬럼 정보 가져오기
     @task
-    def get_column_info(metadata: Dict, table_info: List[Any]) -> List[Any]:
+    def get_column_info(metadata: Dict, table_info: List[Any], **context) -> List[Any]:
         # 테이블의 실제 컬럼 이름 확인
         column_names = [col[0] for col in table_info]
         print("Available columns:", column_names)
@@ -96,7 +90,7 @@ def lrs_statement_extractor():
         # metadata에서 컬럼 정보 가져오기
         columns = metadata.get('column')
         if not columns:
-            raise ValueError("Connection의 metadata에 'column' 정보가 없습니다.")
+            raise ValueError("Variable 'lrs_connection_meta'에 'column' 정보가 없습니다.")
         
         # 필수 컬럼이 테이블에 있는지 확인
         for col in REQUIRED_COLUMNS:
@@ -114,52 +108,51 @@ def lrs_statement_extractor():
     def create_select_query(columns: List[str], **context) -> str:
         ti = context['ti']
         last_process_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
-
-        column_list = ', '.join(columns)
         
+        column_list = ', '.join(columns)
         return f"""
             SELECT {column_list}
             FROM {{schema}}.lrs_statement
-            WHERE id > { last_process_id }
+            WHERE id > {last_process_id}
             ORDER BY id ASC
             LIMIT 500;
         """
 
     @task
-    def prepare_base_path(type_result: List[Any]) -> str:
+    def prepare_base_path(type_result: List[Any], **context) -> str:
         if not type_result:
-            raise ValueError("No type information found in the table")
+            raise ValueError("타입 정보를 찾을 수 없습니다.")
             
         type_value = type_result[0][0]
         if not isinstance(type_value, str):
-            raise ValueError("Type information is not in the expected format")
+            raise ValueError("타입 정보가 올바른 형식이 아닙니다.")
             
         # LRS 저장 경로 설정
         return str(Path(save_folder_path) / type_value)
     
     @task
-    def prepare_columns(columns_result: List[Any]) -> List[str]:
+    def prepare_columns(columns_result: List[Any], **context) -> List[str]:
         if not columns_result:
-            raise ValueError("No column information found in the table")
+            raise ValueError("컬럼 정보를 찾을 수 없습니다.")
             
         try:
             columns = json.loads(columns_result[0][0])
             if not isinstance(columns, list):
-                raise ValueError("Column information is not in the expected format")
+                raise ValueError("컬럼 정보가 올바른 형식이 아닙니다.")
         except json.JSONDecodeError:
             # 이미 리스트 형태로 반환된 경우
             columns = columns_result[0][0]
             if not isinstance(columns, list):
-                raise ValueError("Column information is not in the expected format")
+                raise ValueError("컬럼 정보가 올바른 형식이 아닙니다.")
             
         # 필수 컬럼이 포함되어 있는지 확인
         if not REQUIRED_COLUMNS.issubset(set(columns)):
-            raise ValueError(f"Required columns {REQUIRED_COLUMNS} are not present in {columns}")
+            raise ValueError(f"필수 컬럼 {REQUIRED_COLUMNS}이 포함되어 있지 않습니다: {columns}")
             
         return columns
     
     @task
-    def process_results(query_results: List[Any], columns: List[str], base_path: str) -> int:
+    def process_results(query_results: List[Any], columns: List[str], base_path: str, **context) -> int:
         if not query_results:
             return 0
         
@@ -171,28 +164,44 @@ def lrs_statement_extractor():
             }
             
             # timestamp를 기준으로 디렉토리 구조 생성
-            statement_timestamp = row_dict['timestamp']
+            statement_timestamp = row_dict.get('timestamp')
             if not statement_timestamp:
                 statement_timestamp = datetime.now()
                 
             # JSON 데이터 준비 (timestamp를 ISO 형식 문자열로 변환)
             statement_data = row_dict.copy()
-            statement_data['timestamp'] = statement_timestamp.isoformat()
+            statement_data['timestamp'] = statement_timestamp.isoformat() if isinstance(statement_timestamp, datetime) else statement_timestamp
             
             # 날짜별 디렉토리 구조 생성
-            output_dir = Path(base_path) / statement_timestamp.strftime('%m') / statement_timestamp.strftime('%d')
+            if isinstance(statement_timestamp, datetime):
+                month = statement_timestamp.strftime('%m')
+                day = statement_timestamp.strftime('%d')
+            else:
+                # timestamp가 문자열인 경우
+                try:
+                    dt = datetime.fromisoformat(statement_timestamp)
+                    month = dt.strftime('%m')
+                    day = dt.strftime('%d')
+                except (ValueError, TypeError):
+                    # 파싱할 수 없는 경우 현재 날짜 사용
+                    now = datetime.now()
+                    month = now.strftime('%m')
+                    day = now.strftime('%d')
+            
+            output_dir = Path(base_path) / month / day
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            file_path = output_dir / f"{statement_data['statement_id']}.json"
+            statement_id = statement_data.get('statement_id', f"unknown_{max_id}")
+            file_path = output_dir / f"{statement_id}.json"
             with open(file_path, 'w') as f:
                 json.dump(statement_data, f, indent=2)
             
-            max_id = max(max_id, statement_data['id'])
+            max_id = max(max_id, statement_data.get('id', 0))
         
         return max_id
 
     @task
-    def update_last_processed_id(max_id: int) -> int:
+    def update_last_processed_id(max_id: int, **context) -> int:
         if max_id and max_id > 0:
             return max_id
         return 0
