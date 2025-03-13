@@ -37,7 +37,7 @@ def lrs_statement_extractor():
     # type 정보 조회
     get_type = PostgresOperator(
         task_id='get_type',
-        postgres_conn_id='lrs-connection',
+        postgres_conn_id='lrs_connection',
         sql="""
             SELECT extra::json->>'sys_type' as type
             FROM {{ conn.lrs_connection.schema }}.lrs_statement
@@ -49,7 +49,7 @@ def lrs_statement_extractor():
     # 컬럼 정보 조회
     get_columns = PostgresOperator(
         task_id='get_columns',
-        postgres_conn_id='lrs-connection',
+        postgres_conn_id='lrs_connection',
         sql="""
             SELECT extra::json->>'column' as columns
             FROM {{ conn.lrs_connection.schema }}.lrs_statement
@@ -148,7 +148,7 @@ def lrs_statement_extractor():
     
     extract_statements = PostgresOperator(
         task_id='extract_statements',
-        postgres_conn_id='lrs-connection',
+        postgres_conn_id='lrs_connection',
         sql=select_query
     )
     
