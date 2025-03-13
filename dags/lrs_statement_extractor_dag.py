@@ -24,7 +24,6 @@ def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     hook = PostgresHook(postgres_conn_id=conn_id)
     # Connection 정보에서 metadata 제외하여 psycopg2에 전달
     conn = hook.get_connection(conn_id)
-    print(dict(conn.extra))
     print(type(conn.extra))
     # extra_dict = json.loads(conn.extra) if conn.extra else {}
     # filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
