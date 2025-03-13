@@ -53,17 +53,35 @@ default_args = {
     'retry_delay': timedelta(minutes=1),
 }
 
-def get_metadata_from_variable() -> Dict:
-    """Variable에서 metadata 정보를 가져옵니다."""
+def get_connection_config(conn_id: str = POSTGRES_CONN_ID) -> Dict[str, Any]:
+    """
+    Connection과 Variable 정보를 한 번에 가져옵니다.
+    
+    Returns:
+        Dict[str, Any]: {
+            'hook': PostgresHook 인스턴스,
+            'schema': 스키마 이름,
+            'table': 테이블 이름,
+            'metadata': LRS 메타데이터,
+            'save_folder_path': 저장 경로
+        }
+    """
+    config = {}
+    
+    # PostgreSQL 연결 설정
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    try:
+        conn = hook.get_connection(conn_id)
+        config['hook'] = hook
+    except Exception as e:
+        raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
+    
+    # Variable에서 metadata 정보 가져오기
     try:
         metadata_json = Variable.get(LRS_METADATA_VARIABLE)
-    except Exception as e:
-        raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'를 찾을 수 없습니다: {str(e)}")
-    
-    try:
         metadata = json.loads(metadata_json)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'의 JSON 형식이 올바르지 않습니다: {str(e)}")
+    except Exception as e:
+        raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'를 찾을 수 없거나 JSON 형식이 올바르지 않습니다: {str(e)}")
     
     if not metadata:
         raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 정보가 없습니다.")
@@ -74,27 +92,23 @@ def get_metadata_from_variable() -> Dict:
         if field not in metadata:
             raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 '{field}' 정보가 없습니다.")
     
-    return metadata
-
-def get_postgres_hook_and_schema(conn_id: str = POSTGRES_CONN_ID) -> Tuple[PostgresHook, str]:
-    """PostgreSQL 연결과 스키마 정보를 가져옵니다."""
-    hook = PostgresHook(postgres_conn_id=conn_id)
+    config['metadata'] = metadata
     
-    # Connection 정보 확인
+    # schema 정보 설정
+    config['schema'] = conn.schema or metadata.get('schema')
+    if not config['schema']:
+        raise ValueError("schema 정보를 찾을 수 없습니다.")
+    
+    # table 정보 설정
+    config['table'] = metadata.get('table')
+    
+    # 저장 경로 가져오기
     try:
-        conn = hook.get_connection(conn_id)
+        config['save_folder_path'] = Variable.get(SAVE_FOLDER_VARIABLE)
     except Exception as e:
-        raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
+        raise ValueError(f"Variable '{SAVE_FOLDER_VARIABLE}'를 찾을 수 없습니다: {str(e)}")
     
-    # schema 정보 가져오기
-    schema = conn.schema
-    if not schema:
-        metadata = get_metadata_from_variable()
-        schema = metadata.get('schema')
-        if not schema:
-            raise ValueError("schema 정보를 찾을 수 없습니다.")
-    
-    return hook, schema
+    return config
 
 def get_month_day_from_timestamp(timestamp) -> tuple:
     """timestamp에서 월과 일을 추출합니다."""
@@ -128,47 +142,40 @@ def learning_record_etl():
         raise ValueError(f"Variable '{SAVE_FOLDER_VARIABLE}'를 찾을 수 없습니다: {str(e)}")
 
     # Variable에서 metadata 정보 가져오기
-    metadata = get_metadata_from_variable()
+    metadata = get_connection_config()['metadata']
     
     @task
     def get_table_info(conn_id: str = POSTGRES_CONN_ID) -> List[Any]:
         """테이블 구조 정보를 가져옵니다."""
-        metadata = get_metadata_from_variable()
-        table_name = metadata.get('table')
-        
-        hook, schema = get_postgres_hook_and_schema(conn_id)
+        config = get_connection_config(conn_id)
         
         sql = f"""
             SELECT column_name, data_type 
             FROM information_schema.columns 
-            WHERE table_schema = '{schema}' AND table_name = '{table_name}';
+            WHERE table_schema = '{config['schema']}' AND table_name = '{config['table']}';
         """
         
-        return hook.get_records(sql)
+        return config['hook'].get_records(sql)
     
     @task
     def get_type_info(**context) -> str:
         """Variable의 metadata에서 type 정보를 가져옵니다."""
-        metadata = get_metadata_from_variable()
-        sys_type = metadata.get('sys_type')
-        if not sys_type:
-            raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 'sys_type' 정보가 없습니다.")
+        config = get_connection_config()
+        sys_type = config['metadata'].get('sys_type')
         logging.info(f"Using sys_type: {sys_type}")
         return sys_type
     
     @task
     def get_column_info(table_info: List[Any], **context) -> List[str]:
         """Variable의 metadata에서 컬럼 정보를 가져옵니다."""
-        metadata = get_metadata_from_variable()
+        config = get_connection_config()
         
         # 테이블의 실제 컬럼 이름 확인
         column_names = [col[0] for col in table_info]
         logging.info(f"Available columns: {column_names}")
         
         # metadata에서 컬럼 정보 가져오기
-        columns = metadata.get('column')
-        if not columns:
-            raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 'column' 정보가 없습니다.")
+        columns = config['metadata'].get('column')
         
         # 필수 컬럼이 테이블에 있는지 확인
         for col in REQUIRED_COLUMNS:
@@ -198,8 +205,9 @@ def learning_record_etl():
         if not type_value:
             raise ValueError("타입 정보를 찾을 수 없습니다.")
             
+        config = get_connection_config()
         # LRS 저장 경로 설정
-        base_path = Path(save_folder_path) / type_value
+        base_path = Path(config['save_folder_path']) / type_value
         
         # 기본 디렉토리 생성
         base_path.mkdir(parents=True, exist_ok=True)
@@ -215,17 +223,13 @@ def learning_record_etl():
         Returns:
             Tuple[int, int, int]: (max_id, 성공 개수, 실패 개수)
         """
-        hook, schema = get_postgres_hook_and_schema(conn_id)
-        
-        # 테이블 이름 가져오기
-        metadata = get_metadata_from_variable()
-        table_name = metadata.get('table')
+        config = get_connection_config(conn_id)
         
         # 쿼리 생성
         column_list = ', '.join(columns)
         query = f"""
             SELECT {column_list}
-            FROM {schema}.{table_name}
+            FROM {config['schema']}.{config['table']}
             WHERE id > {last_id}
             ORDER BY id ASC
             LIMIT 10;
@@ -237,7 +241,7 @@ def learning_record_etl():
         max_id = last_id
         
         # 데이터베이스에서 직접 데이터 가져와서 처리
-        with hook.get_conn() as conn:
+        with config['hook'].get_conn() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query)
                 
@@ -283,7 +287,6 @@ def learning_record_etl():
                         try:
                             if isinstance(statement_timestamp, str):
                                 datetime.fromisoformat(statement_timestamp.replace('Z', '+00:00'))
-                            # datetime 객체는 이미 유효한 timestamp이므로 추가 검증 불필요
                         except (ValueError, TypeError):
                             logging.warning(f"timestamp 파싱 실패 (ID: {row_dict.get('id')}, statement_id: {statement_id}, timestamp: {statement_timestamp})")
                             error_count += 1
@@ -369,7 +372,6 @@ def learning_record_etl():
     table_info = get_table_info()
     type_value = get_type_info()
     base_path = prepare_base_path(type_value)
-    
     columns = get_column_info(table_info)
     last_id = get_last_processed_id()
     
@@ -378,12 +380,15 @@ def learning_record_etl():
     save_id = save_last_processed_id(process_result)
     stats = log_processing_stats(process_result)
     
-    # 태스크 의존성 설정
+    # 태스크 의존성 설정 - 실제 데이터 흐름에 맞게 구성
+    # 메타데이터 수집 단계
     type_value >> base_path
     table_info >> columns
     
-    # 처리 의존성
+    # 데이터 처리 단계
     [columns, base_path, last_id] >> process_result
+    
+    # 결과 처리 단계
     process_result >> [save_id, stats]
 
 dag = learning_record_etl()
