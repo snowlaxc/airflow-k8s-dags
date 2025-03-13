@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from airflow.decorators import dag, task
-from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.models import Variable
 import json
 import os
@@ -19,6 +19,18 @@ default_args = {
 
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
+@task
+def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    # Connection 정보에서 metadata 제외
+    conn = hook.get_connection(conn_id)
+    extra_dict = json.loads(conn.extra) if conn.extra else {}
+    filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
+    conn.extra = json.dumps(filtered_extra) if filtered_extra else None
+    hook.connection = conn
+    
+    return hook.get_records(sql)
+
 @dag(
     dag_id='lrs_statement_extractor',
     default_args=default_args,
@@ -35,30 +47,20 @@ def lrs_statement_extractor():
     )
 
     # type 정보 조회
-    get_type = SQLExecuteQueryOperator(
-        task_id='get_type',
-        conn_id='lrs_connection',
-        sql="""
-            SELECT extra::json->'metadata'->>'sys_type' as type
-            FROM lrs_statement
-            WHERE extra::json->'metadata'->>'sys_type' IS NOT NULL
-            LIMIT 1;
-        """,
-        hook_params={'schema': 'acid'}
-    )
+    get_type = execute_sql("""
+        SELECT extra::json->'metadata'->>'sys_type' as type
+        FROM lrs_statement
+        WHERE extra::json->'metadata'->>'sys_type' IS NOT NULL
+        LIMIT 1;
+    """)
 
     # 컬럼 정보 조회
-    get_columns = SQLExecuteQueryOperator(
-        task_id='get_columns',
-        conn_id='lrs_connection',
-        sql="""
-            SELECT extra::json->'metadata'->>'column' as columns
-            FROM lrs_statement
-            WHERE extra::json->'metadata'->>'column' IS NOT NULL
-            LIMIT 1;
-        """,
-        hook_params={'schema': 'acid'}
-    )
+    get_columns = execute_sql("""
+        SELECT extra::json->'metadata'->>'column' as columns
+        FROM lrs_statement
+        WHERE extra::json->'metadata'->>'column' IS NOT NULL
+        LIMIT 1;
+    """)
 
     @task
     def create_select_query(columns: List[str]) -> str:
@@ -144,18 +146,13 @@ def lrs_statement_extractor():
         return 0
 
     # Task 의존성 설정
-    base_path = prepare_base_path(get_type.output)
-    columns = prepare_columns(get_columns.output)
+    base_path = prepare_base_path(get_type)
+    columns = prepare_columns(get_columns)
     select_query = create_select_query(columns)
     
-    extract_statements = SQLExecuteQueryOperator(
-        task_id='extract_statements',
-        conn_id='lrs_connection',
-        sql=select_query,
-        hook_params={'schema': 'acid'}
-    )
+    extract_statements = execute_sql(select_query)
     
-    max_id = process_results(extract_statements.output, columns, base_path)
+    max_id = process_results(extract_statements, columns, base_path)
     update_last_processed_id(max_id)
 
 dag = lrs_statement_extractor()
