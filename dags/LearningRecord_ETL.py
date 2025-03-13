@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.models import Variable
@@ -42,16 +42,15 @@ LRS_METADATA_VARIABLE = 'lrs_connection_meta'
 SAVE_FOLDER_VARIABLE = 'save_folder_path'
 LAST_PROCESSED_ID_VARIABLE = 'lrs_last_processed_id'
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
+KST_OFFSET = timezone(timedelta(hours=9))  # UTC+9 (한국 시간)
 
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2024, 3, 12),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=1),
-}
+def get_kst_now() -> datetime:
+    """현재 시간을 KST로 반환합니다."""
+    return datetime.now(KST_OFFSET)
+
+def get_kst_yesterday() -> datetime:
+    """어제 날짜를 KST로 반환합니다."""
+    return get_kst_now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
 
 def get_connection_config(conn_id: str = POSTGRES_CONN_ID) -> Dict[str, Any]:
     """
@@ -117,22 +116,21 @@ def get_month_day_from_timestamp(timestamp) -> tuple:
     
     # timestamp가 문자열인 경우
     try:
-        # ISO 형식의 'Z' 처리 (UTC 표시)
-        if isinstance(timestamp, str) and 'Z' in timestamp:
-            timestamp = timestamp.replace('Z', '+00:00')
+        # DB의 timestamp는 이미 KST (+0900)
         dt = datetime.fromisoformat(timestamp)
         return dt.strftime('%m'), dt.strftime('%d')
     except (ValueError, TypeError):
         # 파싱할 수 없는 경우 현재 날짜 사용
-        now = datetime.now()
+        now = datetime.now()  # 서버 시간 사용 (이미 KST)
         return now.strftime('%m'), now.strftime('%d')
 
 @dag(
     dag_id='LearningRecord_ETL',
     default_args=default_args,
     description='Extract and save LRS statements to JSON files',
-    schedule_interval='* * * * *',  # 1분마다 실행 (Cron 표현식: 분 시 일 월 요일)
-    catchup=False
+    schedule_interval='0 2 * * *',  # 매일 오전 2시 (KST)
+    catchup=False,
+    start_date=datetime(2024, 3, 12, tzinfo=KST_OFFSET)  # KST 기준
 )
 def learning_record_etl():
     # 저장 경로 가져오기
@@ -255,14 +253,20 @@ def learning_record_etl():
         
         config = get_connection_config(conn_id)
         
-        # 쿼리 생성
+        # 전날 날짜 범위 계산 (서버 시간 사용, 이미 KST)
+        now = datetime.now()
+        yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        today = yesterday + timedelta(days=1)
+        
+        # 쿼리 생성 - 전날 데이터만 조회
         column_list = ', '.join(metadata['columns'])
         query = f"""
             SELECT {column_list}
             FROM {config['schema']}.{config['table']}
             WHERE id > {metadata['last_id']}
-            ORDER BY id ASC
-            LIMIT 10;
+            AND timestamp >= '{yesterday.strftime('%Y-%m-%d %H:%M:%S')}'
+            AND timestamp < '{today.strftime('%Y-%m-%d %H:%M:%S')}'
+            ORDER BY id ASC;
         """
         
         # 카운터 초기화
@@ -287,6 +291,7 @@ def learning_record_etl():
                     return metadata['last_id'], 0, 0
                 
                 logging.info(f"총 {total_count}개의 데이터를 처리합니다.")
+                logging.info(f"조회 기간: {yesterday.strftime('%Y-%m-%d')} 00:00:00 ~ {today.strftime('%Y-%m-%d')} 00:00:00")
                 
                 # 결과 처리
                 for i, row in enumerate(results):
@@ -306,7 +311,7 @@ def learning_record_etl():
                             error_count += 1
                             continue
                         
-                        # timestamp 처리
+                        # timestamp 처리 - 이미 KST이므로 추가 변환 불필요
                         statement_timestamp = row_dict.get('timestamp')
                         if not statement_timestamp:
                             logging.warning(f"timestamp가 없는 데이터 발견 (ID: {row_dict.get('id')}, statement_id: {statement_id})")
@@ -316,15 +321,14 @@ def learning_record_etl():
                         # timestamp 파싱 시도
                         try:
                             if isinstance(statement_timestamp, str):
-                                datetime.fromisoformat(statement_timestamp.replace('Z', '+00:00'))
-                        except (ValueError, TypeError):
+                                datetime.fromisoformat(statement_timestamp)
+                        except ValueError:
                             logging.warning(f"timestamp 파싱 실패 (ID: {row_dict.get('id')}, statement_id: {statement_id}, timestamp: {statement_timestamp})")
                             error_count += 1
                             continue
-                            
-                        # JSON 데이터 준비
+                        
+                        # JSON 데이터 준비 - timestamp는 이미 KST 형식
                         statement_data = row_dict.copy()
-                        statement_data['timestamp'] = statement_timestamp.isoformat() if isinstance(statement_timestamp, datetime) else statement_timestamp
                         
                         # 날짜별 디렉토리 구조 생성
                         month, day = get_month_day_from_timestamp(statement_timestamp)
