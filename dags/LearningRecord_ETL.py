@@ -228,7 +228,7 @@ def learning_record_etl():
             FROM {schema}.{table_name}
             WHERE id > {last_id}
             ORDER BY id ASC
-            LIMIT 500;
+            LIMIT 10;
         """
         
         # 카운터 초기화
