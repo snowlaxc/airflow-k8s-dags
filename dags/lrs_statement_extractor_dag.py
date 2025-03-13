@@ -29,6 +29,12 @@ def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     conn.extra = json.dumps(filtered_extra) if filtered_extra else None
     hook.connection = conn
     
+    # schema 정보 가져오기
+    schema = conn.schema
+    
+    # SQL 쿼리에 schema 적용
+    sql = sql.format(schema=schema)
+    
     return hook.get_records(sql)
 
 @dag(
@@ -48,17 +54,17 @@ def lrs_statement_extractor():
 
     # type 정보 조회
     get_type = execute_sql("""
-        SELECT extra::json->'metadata'->>'sys_type' as type
-        FROM lrs_statement
-        WHERE extra::json->'metadata'->>'sys_type' IS NOT NULL
+        SELECT metadata->>'sys_type' as type
+        FROM {schema}.lrs_statement
+        WHERE metadata->>'sys_type' IS NOT NULL
         LIMIT 1;
     """)
 
     # 컬럼 정보 조회
     get_columns = execute_sql("""
-        SELECT extra::json->'metadata'->>'column' as columns
-        FROM lrs_statement
-        WHERE extra::json->'metadata'->>'column' IS NOT NULL
+        SELECT metadata->>'column' as columns
+        FROM {schema}.lrs_statement
+        WHERE metadata->>'column' IS NOT NULL
         LIMIT 1;
     """)
 
@@ -67,7 +73,7 @@ def lrs_statement_extractor():
         column_list = ', '.join(columns)
         return f"""
             SELECT {column_list}
-            FROM lrs_statement
+            FROM {{schema}}.lrs_statement
             WHERE id > {{{{ task_instance.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0 }}}}
             ORDER BY id ASC
             LIMIT 500;
