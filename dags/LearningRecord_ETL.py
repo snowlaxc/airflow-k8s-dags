@@ -43,6 +43,17 @@ LAST_PROCESSED_ID_VARIABLE = 'lrs_last_processed_id'
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 KST_OFFSET = timezone(timedelta(hours=9))  # UTC+9 (한국 시간)
 
+# DAG 기본 설정
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 3, 12, tzinfo=KST_OFFSET),  # KST 기준
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=1),
+}
+
 def get_kst_now() -> datetime:
     """현재 시간을 KST로 반환합니다."""
     return datetime.now(KST_OFFSET)
@@ -127,7 +138,7 @@ def get_month_day_from_timestamp(timestamp) -> tuple:
     dag_id='LearningRecord_ETL',
     default_args=default_args,
     description='Extract and save LRS statements to JSON files',
-    schedule_interval='22 17 * * *',  # 매일 오전 2시 (KST)
+    schedule_interval='24 17 * * *',  # 매일 오전 2시 (KST)
     catchup=False,
     start_date=datetime(2024, 3, 12, tzinfo=KST_OFFSET)  # KST 기준
 )
