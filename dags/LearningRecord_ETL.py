@@ -171,9 +171,12 @@ def lrs_statement_extractor():
     @task
     def get_last_processed_id(**context) -> int:
         """마지막으로 처리된 ID를 가져옵니다."""
-        ti = context['ti']
-        last_processed_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
-        return last_processed_id
+        # Variable에서 마지막 처리된 ID를 가져오거나 기본값 0 사용
+        try:
+            last_id = Variable.get("lrs_last_processed_id", default_var=0)
+            return int(last_id)
+        except (ValueError, TypeError):
+            return 0
 
     @task
     def prepare_base_path(type_value: str, **context) -> str:
@@ -330,18 +333,22 @@ def lrs_statement_extractor():
                 return now.strftime('%m'), now.strftime('%d')
 
     @task
-    def update_last_processed_id(result_tuple: Tuple[int, int, int], **context) -> int:
+    def save_last_processed_id(result_tuple: Tuple[int, int, int], **context) -> int:
         """
         처리된 결과 중 가장 큰 ID 값을 저장합니다.
         이 값은 다음 실행 시 이 ID보다 큰 데이터만 조회하는 데 사용됩니다.
         """
         max_id, success_count, error_count = result_tuple
         
-        ti = context['ti']
-        last_processed_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
+        # 현재 저장된 마지막 ID 가져오기
+        try:
+            last_processed_id = int(Variable.get("lrs_last_processed_id", default_var=0))
+        except (ValueError, TypeError):
+            last_processed_id = 0
         
         if max_id > last_processed_id:
             logging.info(f"마지막으로 처리된 ID 업데이트: {last_processed_id} -> {max_id}")
+            Variable.set("lrs_last_processed_id", str(max_id))
             return max_id
         return last_processed_id
 
@@ -385,7 +392,7 @@ def lrs_statement_extractor():
     
     # 데이터베이스에서 직접 처리
     process_result = process_statements(columns, base_path, last_id)
-    last_id = update_last_processed_id(process_result)
+    save_id = save_last_processed_id(process_result)
     stats = log_processing_stats(process_result)
     
     # 타입 정보 의존성
@@ -398,7 +405,7 @@ def lrs_statement_extractor():
     columns >> process_result
     last_id >> process_result
     base_path >> process_result
-    process_result >> last_id
+    process_result >> save_id
     process_result >> stats
 
 dag = lrs_statement_extractor()
