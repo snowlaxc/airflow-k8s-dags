@@ -22,7 +22,7 @@ REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 @task
 def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     hook = PostgresHook(postgres_conn_id=conn_id)
-    # Connection 정보에서 metadata 제외
+    # Connection 정보에서 metadata 제외하여 psycopg2에 전달
     conn = hook.get_connection(conn_id)
     extra_dict = json.loads(conn.extra) if conn.extra else {}
     filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
@@ -30,12 +30,23 @@ def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     hook.connection = conn
     
     # schema 정보 가져오기
-    schema = conn.schema
+    schema = conn.schema or 'public'
     
     # SQL 쿼리에 schema 적용
     sql = sql.format(schema=schema)
     
     return hook.get_records(sql)
+
+@task
+def get_connection_metadata(conn_id: str = 'lrs_connection') -> Dict:
+    """Connection의 extra 필드에서 metadata 정보를 가져옵니다."""
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    conn = hook.get_connection(conn_id)
+    extra_dict = json.loads(conn.extra) if conn.extra else {}
+    metadata = extra_dict.get('metadata')
+    if not metadata:
+        raise ValueError("Connection의 extra 필드에 'metadata' 정보가 없습니다.")
+    return metadata
 
 @dag(
     dag_id='lrs_statement_extractor',
@@ -52,21 +63,48 @@ def lrs_statement_extractor():
         default_var=str(Path.home())  # 기본값으로 홈 디렉토리 사용
     )
 
-    # type 정보 조회
-    get_type = execute_sql("""
-        SELECT metadata->>'sys_type' as type
-        FROM {schema}.lrs_statement
-        WHERE metadata->>'sys_type' IS NOT NULL
-        LIMIT 1;
+    # Connection의 metadata 정보 가져오기
+    connection_metadata = get_connection_metadata()
+    
+    # 테이블 구조 확인
+    get_table_info = execute_sql("""
+        SELECT column_name, data_type 
+        FROM information_schema.columns 
+        WHERE table_schema = '{schema}' AND table_name = 'lrs_statement';
     """)
-
-    # 컬럼 정보 조회
-    get_columns = execute_sql("""
-        SELECT metadata->>'column' as columns
-        FROM {schema}.lrs_statement
-        WHERE metadata->>'column' IS NOT NULL
-        LIMIT 1;
-    """)
+    
+    # Connection의 metadata에서 type 정보 가져오기
+    @task
+    def get_type_info(metadata: Dict) -> List[Any]:
+        sys_type = metadata.get('sys_type')
+        if not sys_type:
+            raise ValueError("Connection의 metadata에 'sys_type' 정보가 없습니다.")
+        print(f"Using sys_type: {sys_type}")
+        return [[sys_type]]
+    
+    # Connection의 metadata에서 컬럼 정보 가져오기
+    @task
+    def get_column_info(metadata: Dict, table_info: List[Any]) -> List[Any]:
+        # 테이블의 실제 컬럼 이름 확인
+        column_names = [col[0] for col in table_info]
+        print("Available columns:", column_names)
+        
+        # metadata에서 컬럼 정보 가져오기
+        columns = metadata.get('column')
+        if not columns:
+            raise ValueError("Connection의 metadata에 'column' 정보가 없습니다.")
+        
+        # 필수 컬럼이 테이블에 있는지 확인
+        for col in REQUIRED_COLUMNS:
+            if col not in column_names:
+                raise ValueError(f"필수 컬럼 '{col}'이 테이블에 없습니다.")
+        
+        # 필수 컬럼이 포함되어 있는지 확인
+        if not REQUIRED_COLUMNS.issubset(set(columns)):
+            raise ValueError(f"필수 컬럼 {REQUIRED_COLUMNS}이 metadata의 'column' 정보에 포함되어 있지 않습니다.")
+        
+        print(f"Using columns: {columns}")
+        return [[json.dumps(columns)]]
 
     @task
     def create_select_query(columns: List[str]) -> str:
@@ -152,8 +190,8 @@ def lrs_statement_extractor():
         return 0
 
     # Task 의존성 설정
-    base_path = prepare_base_path(get_type)
-    columns = prepare_columns(get_columns)
+    base_path = prepare_base_path(get_type_info(connection_metadata))
+    columns = prepare_columns(get_column_info(connection_metadata, get_table_info))
     select_query = create_select_query(columns)
     
     extract_statements = execute_sql(select_query)
