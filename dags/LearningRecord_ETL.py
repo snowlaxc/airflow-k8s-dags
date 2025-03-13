@@ -50,7 +50,7 @@ default_args = {
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    'retry_delay': timedelta(minutes=1),
 }
 
 def get_metadata_from_variable() -> Dict:
@@ -117,7 +117,7 @@ def get_month_day_from_timestamp(timestamp) -> tuple:
     dag_id='LearningRecord_ETL',
     default_args=default_args,
     description='Extract and save LRS statements to JSON files',
-    schedule_interval=None,
+    schedule_interval='* * * * *',  # 1분마다 실행 (Cron 표현식: 분 시 일 월 요일)
     catchup=False
 )
 def learning_record_etl():
