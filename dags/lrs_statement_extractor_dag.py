@@ -24,20 +24,21 @@ def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     hook = PostgresHook(postgres_conn_id=conn_id)
     # Connection 정보에서 metadata 제외하여 psycopg2에 전달
     conn = hook.get_connection(conn_id)
-    extra_dict = json.loads(conn.extra) if conn.extra else {}
-    filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
-    conn.extra = json.dumps(filtered_extra) if filtered_extra else None
-    hook.connection = conn
+    print(conn.extra)
+    # extra_dict = json.loads(conn.extra) if conn.extra else {}
+    # filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
+    # conn.extra = json.dumps(filtered_extra) if filtered_extra else None
+    # hook.connection = conn
     
-    # schema 정보 가져오기
-    schema = conn.schema
-    if not schema:
-        raise ValueError("Connection에 schema 정보가 없습니다.")
+    # # schema 정보 가져오기
+    # schema = conn.schema
+    # if not schema:
+    #     raise ValueError("Connection에 schema 정보가 없습니다.")
     
-    # SQL 쿼리에 schema 적용
-    sql = sql.format(schema=schema)
-    
-    return hook.get_records(sql)
+    # # SQL 쿼리에 schema 적용
+    # sql = sql.format(schema=schema)
+    return True
+    # return hook.get_records(sql)
 
 @task
 def get_connection_metadata(conn_id: str = 'lrs_connection') -> Dict:
