@@ -30,7 +30,9 @@ def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     hook.connection = conn
     
     # schema 정보 가져오기
-    schema = conn.schema or 'public'
+    schema = conn.schema
+    if not schema:
+        raise ValueError("Connection에 schema 정보가 없습니다.")
     
     # SQL 쿼리에 schema 적용
     sql = sql.format(schema=schema)
