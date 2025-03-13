@@ -15,6 +15,7 @@ import logging
 2. lrs_connection_meta = {
     "sys_type": "lrs",
     "schema": "acid",
+    "table": "lrs_statement",
     "column": [
       "id",
       "statement_id",
@@ -51,30 +52,7 @@ default_args = {
 
 REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
-@task
-def execute_sql(sql: str, conn_id: str = POSTGRES_CONN_ID, **context) -> List[Any]:
-    """SQL 쿼리를 실행하고 결과를 반환합니다."""
-    hook = PostgresHook(postgres_conn_id=conn_id)
-    
-    # Connection 정보 확인
-    try:
-        conn = hook.get_connection(conn_id)
-    except Exception as e:
-        raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
-    
-    # schema 정보 가져오기
-    schema = conn.schema
-    if not schema:
-        metadata = get_connection_metadata_from_variable()
-        schema = metadata.get('schema')
-        if not schema:
-            raise ValueError("schema 정보를 찾을 수 없습니다.")
-    
-    sql = sql.format(schema=schema)
-    return hook.get_records(sql)
-
-@task
-def get_connection_metadata_from_variable() -> Dict:
+def get_metadata_from_variable() -> Dict:
     """Variable에서 metadata 정보를 가져옵니다."""
     try:
         metadata_json = Variable.get(LRS_METADATA_VARIABLE)
@@ -97,6 +75,33 @@ def get_connection_metadata_from_variable() -> Dict:
     
     return metadata
 
+@task
+def execute_sql(sql: str, conn_id: str = POSTGRES_CONN_ID, **context) -> List[Any]:
+    """SQL 쿼리를 실행하고 결과를 반환합니다."""
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    
+    # Connection 정보 확인
+    try:
+        conn = hook.get_connection(conn_id)
+    except Exception as e:
+        raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
+    
+    # schema 정보 가져오기
+    schema = conn.schema
+    if not schema:
+        metadata = get_metadata_from_variable()
+        schema = metadata.get('schema')
+        if not schema:
+            raise ValueError("schema 정보를 찾을 수 없습니다.")
+    
+    sql = sql.format(schema=schema)
+    return hook.get_records(sql)
+
+@task
+def get_connection_metadata_from_variable() -> Dict:
+    """Variable에서 metadata 정보를 가져옵니다."""
+    return get_metadata_from_variable()
+
 @dag(
     dag_id='lrs_statement_extractor',
     default_args=default_args,
@@ -112,10 +117,10 @@ def lrs_statement_extractor():
         raise ValueError(f"Variable '{SAVE_FOLDER_VARIABLE}'를 찾을 수 없습니다: {str(e)}")
 
     # Variable에서 metadata 정보 가져오기
-    connection_metadata = get_connection_metadata_from_variable()
+    metadata = get_metadata_from_variable()
     
     # 테이블 이름 가져오기
-    table_name = connection_metadata.get('table')
+    table_name = metadata.get('table')
     
     @task
     def get_table_info(conn_id: str = POSTGRES_CONN_ID) -> List[Any]:
@@ -128,8 +133,9 @@ def lrs_statement_extractor():
         return execute_sql(sql, conn_id=conn_id)
     
     @task
-    def get_type_info(metadata: Dict, **context) -> str:
+    def get_type_info(**context) -> str:
         """Variable의 metadata에서 type 정보를 가져옵니다."""
+        metadata = get_metadata_from_variable()
         sys_type = metadata.get('sys_type')
         if not sys_type:
             raise ValueError(f"Variable '{LRS_METADATA_VARIABLE}'에 'sys_type' 정보가 없습니다.")
@@ -137,8 +143,10 @@ def lrs_statement_extractor():
         return sys_type
     
     @task
-    def get_column_info(metadata: Dict, table_info: List[Any], **context) -> List[str]:
+    def get_column_info(table_info: List[Any], **context) -> List[str]:
         """Variable의 metadata에서 컬럼 정보를 가져옵니다."""
+        metadata = get_metadata_from_variable()
+        
         # 테이블의 실제 컬럼 이름 확인
         column_names = [col[0] for col in table_info]
         logging.info(f"Available columns: {column_names}")
@@ -201,13 +209,13 @@ def lrs_statement_extractor():
         # schema 정보 가져오기
         schema = conn.schema
         if not schema:
-            metadata = get_connection_metadata_from_variable()
+            metadata = get_metadata_from_variable()
             schema = metadata.get('schema')
             if not schema:
                 raise ValueError("schema 정보를 찾을 수 없습니다.")
         
         # 테이블 이름 가져오기
-        metadata = get_connection_metadata_from_variable()
+        metadata = get_metadata_from_variable()
         table_name = metadata.get('table')
         
         # 쿼리 생성
@@ -369,10 +377,10 @@ def lrs_statement_extractor():
 
     # Task 인스턴스 생성
     table_info = get_table_info()
-    type_value = get_type_info(connection_metadata)
+    type_value = get_type_info()
     base_path = prepare_base_path(type_value)
     
-    columns = get_column_info(connection_metadata, table_info)
+    columns = get_column_info(table_info)
     last_id = get_last_processed_id()
     
     # 데이터베이스에서 직접 처리
@@ -380,16 +388,11 @@ def lrs_statement_extractor():
     last_id = update_last_processed_id(process_result)
     stats = log_processing_stats(process_result)
     
-
-    # 메타데이터 의존성
-    connection_metadata >> type_value
-    connection_metadata >> columns
+    # 타입 정보 의존성
+    type_value >> base_path
     
     # 테이블 정보 의존성
     table_info >> columns
-    
-    # 타입 정보 의존성
-    type_value >> base_path
     
     # 쿼리 및 데이터 처리 의존성
     columns >> process_result
