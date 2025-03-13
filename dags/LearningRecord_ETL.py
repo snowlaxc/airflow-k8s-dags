@@ -39,6 +39,8 @@ port = 5432
 POSTGRES_CONN_ID = 'lrs_connection'
 LRS_METADATA_VARIABLE = 'lrs_connection_meta'
 SAVE_FOLDER_VARIABLE = 'save_folder_path'
+LAST_PROCESSED_ID_VARIABLE = 'lrs_last_processed_id'
+REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
 default_args = {
     'owner': 'airflow',
@@ -49,8 +51,6 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
-
-REQUIRED_COLUMNS = {'id', 'statement_id', 'full_statement', 'timestamp'}
 
 def get_metadata_from_variable() -> Dict:
     """Variable에서 metadata 정보를 가져옵니다."""
@@ -75,9 +75,8 @@ def get_metadata_from_variable() -> Dict:
     
     return metadata
 
-@task
-def execute_sql(sql: str, conn_id: str = POSTGRES_CONN_ID, **context) -> List[Any]:
-    """SQL 쿼리를 실행하고 결과를 반환합니다."""
+def get_postgres_hook_and_schema(conn_id: str = POSTGRES_CONN_ID) -> Tuple[PostgresHook, str]:
+    """PostgreSQL 연결과 스키마 정보를 가져옵니다."""
     hook = PostgresHook(postgres_conn_id=conn_id)
     
     # Connection 정보 확인
@@ -94,13 +93,24 @@ def execute_sql(sql: str, conn_id: str = POSTGRES_CONN_ID, **context) -> List[An
         if not schema:
             raise ValueError("schema 정보를 찾을 수 없습니다.")
     
-    sql = sql.format(schema=schema)
-    return hook.get_records(sql)
+    return hook, schema
 
-@task
-def get_connection_metadata_from_variable() -> Dict:
-    """Variable에서 metadata 정보를 가져옵니다."""
-    return get_metadata_from_variable()
+def get_month_day_from_timestamp(timestamp) -> tuple:
+    """timestamp에서 월과 일을 추출합니다."""
+    if isinstance(timestamp, datetime):
+        return timestamp.strftime('%m'), timestamp.strftime('%d')
+    
+    # timestamp가 문자열인 경우
+    try:
+        # ISO 형식의 'Z' 처리 (UTC 표시)
+        if isinstance(timestamp, str) and 'Z' in timestamp:
+            timestamp = timestamp.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(timestamp)
+        return dt.strftime('%m'), dt.strftime('%d')
+    except (ValueError, TypeError):
+        # 파싱할 수 없는 경우 현재 날짜 사용
+        now = datetime.now()
+        return now.strftime('%m'), now.strftime('%d')
 
 @dag(
     dag_id='LearningRecord_ETL',
@@ -119,38 +129,20 @@ def learning_record_etl():
     # Variable에서 metadata 정보 가져오기
     metadata = get_metadata_from_variable()
     
-    # 테이블 이름 가져오기
-    table_name = metadata.get('table')
-    
     @task
     def get_table_info(conn_id: str = POSTGRES_CONN_ID) -> List[Any]:
         """테이블 구조 정보를 가져옵니다."""
         metadata = get_metadata_from_variable()
         table_name = metadata.get('table')
         
+        hook, schema = get_postgres_hook_and_schema(conn_id)
+        
         sql = f"""
             SELECT column_name, data_type 
             FROM information_schema.columns 
-            WHERE table_schema = '{{schema}}' AND table_name = '{table_name}';
+            WHERE table_schema = '{schema}' AND table_name = '{table_name}';
         """
         
-        # 직접 SQL 실행
-        hook = PostgresHook(postgres_conn_id=conn_id)
-        
-        # Connection 정보 확인
-        try:
-            conn = hook.get_connection(conn_id)
-        except Exception as e:
-            raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
-        
-        # schema 정보 가져오기
-        schema = conn.schema
-        if not schema:
-            schema = metadata.get('schema')
-            if not schema:
-                raise ValueError("schema 정보를 찾을 수 없습니다.")
-        
-        sql = sql.format(schema=schema)
         return hook.get_records(sql)
     
     @task
@@ -194,7 +186,7 @@ def learning_record_etl():
         """마지막으로 처리된 ID를 가져옵니다."""
         # Variable에서 마지막 처리된 ID를 가져오거나 기본값 0 사용
         try:
-            last_id = Variable.get("lrs_last_processed_id", default_var=0)
+            last_id = Variable.get(LAST_PROCESSED_ID_VARIABLE, default_var=0)
             return int(last_id)
         except (ValueError, TypeError):
             return 0
@@ -222,21 +214,7 @@ def learning_record_etl():
         Returns:
             Tuple[int, int, int]: (max_id, 성공 개수, 실패 개수)
         """
-        hook = PostgresHook(postgres_conn_id=conn_id)
-        
-        # Connection 정보 확인
-        try:
-            conn = hook.get_connection(conn_id)
-        except Exception as e:
-            raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
-        
-        # schema 정보 가져오기
-        schema = conn.schema
-        if not schema:
-            metadata = get_metadata_from_variable()
-            schema = metadata.get('schema')
-            if not schema:
-                raise ValueError("schema 정보를 찾을 수 없습니다.")
+        hook, schema = get_postgres_hook_and_schema(conn_id)
         
         # 테이블 이름 가져오기
         metadata = get_metadata_from_variable()
@@ -336,23 +314,6 @@ def learning_record_etl():
         
         return max_id, success_count, error_count
 
-    def get_month_day_from_timestamp(timestamp) -> tuple:
-        """timestamp에서 월과 일을 추출합니다."""
-        if isinstance(timestamp, datetime):
-            return timestamp.strftime('%m'), timestamp.strftime('%d')
-        else:
-            # timestamp가 문자열인 경우
-            try:
-                # ISO 형식의 'Z' 처리 (UTC 표시)
-                if isinstance(timestamp, str) and 'Z' in timestamp:
-                    timestamp = timestamp.replace('Z', '+00:00')
-                dt = datetime.fromisoformat(timestamp)
-                return dt.strftime('%m'), dt.strftime('%d')
-            except (ValueError, TypeError):
-                # 파싱할 수 없는 경우 현재 날짜 사용
-                now = datetime.now()
-                return now.strftime('%m'), now.strftime('%d')
-
     @task
     def save_last_processed_id(result_tuple: Tuple[int, int, int], **context) -> int:
         """
@@ -363,13 +324,13 @@ def learning_record_etl():
         
         # 현재 저장된 마지막 ID 가져오기
         try:
-            last_processed_id = int(Variable.get("lrs_last_processed_id", default_var=0))
+            last_processed_id = int(Variable.get(LAST_PROCESSED_ID_VARIABLE, default_var=0))
         except (ValueError, TypeError):
             last_processed_id = 0
         
         if max_id > last_processed_id:
             logging.info(f"마지막으로 처리된 ID 업데이트: {last_processed_id} -> {max_id}")
-            Variable.set("lrs_last_processed_id", str(max_id))
+            Variable.set(LAST_PROCESSED_ID_VARIABLE, str(max_id))
             return max_id
         return last_processed_id
 
@@ -416,17 +377,12 @@ def learning_record_etl():
     save_id = save_last_processed_id(process_result)
     stats = log_processing_stats(process_result)
     
-    # 타입 정보 의존성
+    # 태스크 의존성 설정
     type_value >> base_path
-    
-    # 테이블 정보 의존성
     table_info >> columns
     
-    # 쿼리 및 데이터 처리 의존성
-    columns >> process_result
-    last_id >> process_result
-    base_path >> process_result
-    process_result >> save_id
-    process_result >> stats
+    # 처리 의존성
+    [columns, base_path, last_id] >> process_result
+    process_result >> [save_id, stats]
 
 dag = learning_record_etl()
