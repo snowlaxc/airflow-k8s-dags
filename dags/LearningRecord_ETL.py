@@ -254,8 +254,8 @@ def learning_record_etl():
         
         # 전날 날짜 범위 계산 (서버 시간 사용, 이미 KST)
         now = datetime.now()
-        yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        today = yesterday + timedelta(days=1)
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday = today - timedelta(days=1)
         
         # 쿼리 생성 - 전날 데이터만 조회
         column_list = ', '.join(metadata['columns'])
