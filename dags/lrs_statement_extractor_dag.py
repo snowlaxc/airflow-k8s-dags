@@ -39,9 +39,9 @@ def lrs_statement_extractor():
         task_id='get_type',
         postgres_conn_id='lrs_connection',
         sql="""
-            SELECT extra::json->>'sys_type' as type
+            SELECT extra::json->'metadata'->>'sys_type' as type
             FROM {{ conn.lrs_connection.schema }}.lrs_statement
-            WHERE extra::json->>'sys_type' IS NOT NULL
+            WHERE extra::json->'metadata'->>'sys_type' IS NOT NULL
             LIMIT 1;
         """
     )
@@ -51,9 +51,9 @@ def lrs_statement_extractor():
         task_id='get_columns',
         postgres_conn_id='lrs_connection',
         sql="""
-            SELECT extra::json->>'column' as columns
+            SELECT extra::json->'metadata'->>'column' as columns
             FROM {{ conn.lrs_connection.schema }}.lrs_statement
-            WHERE extra::json->>'column' IS NOT NULL
+            WHERE extra::json->'metadata'->>'column' IS NOT NULL
             LIMIT 1;
         """
     )
