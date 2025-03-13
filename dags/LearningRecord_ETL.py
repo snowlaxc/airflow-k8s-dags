@@ -215,30 +215,60 @@ def learning_record_etl():
         return str(base_path)
 
     @task
-    def process_statements(columns: List[str], base_path: str, last_id: int, conn_id: str = POSTGRES_CONN_ID, **context) -> Tuple[int, int, int]:
-        """
-        데이터베이스에서 직접 statement를 처리하고 JSON 파일로 저장합니다.
-        XCom을 통해 대용량 데이터를 전달하지 않고 직접 처리합니다.
+    def prepare_metadata(conn_id: str = POSTGRES_CONN_ID) -> Dict[str, Any]:
+        """메타데이터 정보를 준비합니다."""
+        config = get_connection_config(conn_id)
         
-        Returns:
-            Tuple[int, int, int]: (max_id, 성공 개수, 실패 개수)
+        # 테이블 정보 조회
+        sql = f"""
+            SELECT column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_schema = '{config['schema']}' AND table_name = '{config['table']}';
         """
+        table_info = config['hook'].get_records(sql)
+        column_names = [col[0] for col in table_info]
+        
+        # 필수 컬럼 확인
+        for col in REQUIRED_COLUMNS:
+            if col not in column_names:
+                raise ValueError(f"필수 컬럼 '{col}'이 테이블에 없습니다.")
+        
+        # Variable에서 마지막 처리된 ID 가져오기
+        try:
+            last_id = int(Variable.get(LAST_PROCESSED_ID_VARIABLE, default_var=0))
+        except (ValueError, TypeError):
+            last_id = 0
+            
+        return {
+            'type': config['metadata']['sys_type'],
+            'columns': config['metadata']['column'],
+            'base_path': str(Path(config['save_folder_path']) / config['metadata']['sys_type']),
+            'last_id': last_id
+        }
+
+    @task
+    def process_statements(metadata: Dict[str, Any], conn_id: str = POSTGRES_CONN_ID) -> Tuple[int, int, int]:
+        """데이터베이스에서 직접 statement를 처리하고 JSON 파일로 저장합니다."""
+        # 기본 디렉토리 생성
+        base_path = Path(metadata['base_path'])
+        base_path.mkdir(parents=True, exist_ok=True)
+        
         config = get_connection_config(conn_id)
         
         # 쿼리 생성
-        column_list = ', '.join(columns)
+        column_list = ', '.join(metadata['columns'])
         query = f"""
             SELECT {column_list}
             FROM {config['schema']}.{config['table']}
-            WHERE id > {last_id}
+            WHERE id > {metadata['last_id']}
             ORDER BY id ASC
-            LIMIT 10;
+            LIMIT 500;
         """
         
         # 카운터 초기화
         error_count = 0
         success_count = 0
-        max_id = last_id
+        max_id = metadata['last_id']
         
         # 데이터베이스에서 직접 데이터 가져와서 처리
         with config['hook'].get_conn() as conn:
@@ -254,7 +284,7 @@ def learning_record_etl():
                 
                 if not results:
                     logging.info("처리할 데이터가 없습니다.")
-                    return last_id, 0, 0
+                    return metadata['last_id'], 0, 0
                 
                 logging.info(f"총 {total_count}개의 데이터를 처리합니다.")
                 
@@ -368,27 +398,13 @@ def learning_record_etl():
         
         return None
 
-    # Task 인스턴스 생성
-    table_info = get_table_info()
-    type_value = get_type_info()
-    base_path = prepare_base_path(type_value)
-    columns = get_column_info(table_info)
-    last_id = get_last_processed_id()
-    
-    # 데이터베이스에서 직접 처리
-    process_result = process_statements(columns, base_path, last_id)
+    # 메인 태스크 실행
+    metadata = prepare_metadata()
+    process_result = process_statements(metadata)
     save_id = save_last_processed_id(process_result)
     stats = log_processing_stats(process_result)
     
-    # 태스크 의존성 설정 - 실제 데이터 흐름에 맞게 구성
-    # 메타데이터 수집 단계
-    type_value >> base_path
-    table_info >> columns
-    
-    # 데이터 처리 단계
-    [columns, base_path, last_id] >> process_result
-    
-    # 결과 처리 단계
-    process_result >> [save_id, stats]
+    # 단순화된 태스크 의존성
+    metadata >> process_result >> [save_id, stats]
 
 dag = learning_record_etl()
