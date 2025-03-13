@@ -103,7 +103,7 @@ def get_connection_metadata_from_variable() -> Dict:
     return get_metadata_from_variable()
 
 @dag(
-    dag_id='lrs_statement_extractor',
+    dag_id='LearningRecord_ETL',
     default_args=default_args,
     description='Extract and save LRS statements to JSON files',
     schedule_interval=None,
