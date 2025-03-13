@@ -138,7 +138,7 @@ def get_month_day_from_timestamp(timestamp) -> tuple:
     dag_id='LearningRecord_ETL',
     default_args=default_args,
     description='Extract and save LRS statements to JSON files',
-    schedule_interval='24 17 * * *',  # 매일 오전 2시 (KST)
+    schedule_interval='26 17 * * *',  # 매일 17시 26분 (KST)
     catchup=False,
     start_date=datetime(2024, 3, 12, tzinfo=KST_OFFSET)  # KST 기준
 )
