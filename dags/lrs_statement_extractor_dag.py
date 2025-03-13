@@ -191,13 +191,15 @@ def lrs_statement_extractor():
                     month = now.strftime('%m')
                     day = now.strftime('%d')
             
-            output_dir = Path(base_path) / month / day
-            output_dir.mkdir(parents=True, exist_ok=True)
+            output_dir = str(base_path + "/" + month + "/" + day)
+
+            if os.path.exists(output_dir) == False:
+                os.makedirs(output_dir)
             
             statement_id = statement_data.get('statement_id', f"unknown_{len(query_results)}")
-            file_path = output_dir / f"{statement_id}.json"
+            file_path = output_dir + "/" + f"{statement_id}.json"
             with open(file_path, 'w') as f:
-                json.dump(statement_data, f, indent=2)
+                json.dump(statement_data, f, indent = 4)
         
         # 결과가 ID 기준 오름차순 정렬되어 있으므로 마지막 행의 ID가 최대값
         if query_results:
