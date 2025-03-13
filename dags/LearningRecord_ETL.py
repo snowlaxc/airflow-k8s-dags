@@ -322,7 +322,7 @@ def learning_record_etl():
                         # 파일 저장
                         file_path = output_dir / f"{statement_id}.json"
                         with open(file_path, 'w') as f:
-                            json.dump(statement_data, f, indent=2)
+                            json.dump(statement_data, f, indent=2, ensure_ascii=False)
                             
                         # 성공 카운트 증가
                         success_count += 1
