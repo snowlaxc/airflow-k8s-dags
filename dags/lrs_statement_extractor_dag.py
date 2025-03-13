@@ -38,9 +38,10 @@ def lrs_statement_extractor():
     get_type = PostgresOperator(
         task_id='get_type',
         postgres_conn_id='lrs_connection',
+        hook_params={'options': '-c search_path=acid'},
         sql="""
             SELECT extra::json->'metadata'->>'sys_type' as type
-            FROM {{ conn.lrs_connection.schema }}.lrs_statement
+            FROM lrs_statement
             WHERE extra::json->'metadata'->>'sys_type' IS NOT NULL
             LIMIT 1;
         """
@@ -50,9 +51,10 @@ def lrs_statement_extractor():
     get_columns = PostgresOperator(
         task_id='get_columns',
         postgres_conn_id='lrs_connection',
+        hook_params={'options': '-c search_path=acid'},
         sql="""
             SELECT extra::json->'metadata'->>'column' as columns
-            FROM {{ conn.lrs_connection.schema }}.lrs_statement
+            FROM lrs_statement
             WHERE extra::json->'metadata'->>'column' IS NOT NULL
             LIMIT 1;
         """
@@ -63,7 +65,7 @@ def lrs_statement_extractor():
         column_list = ', '.join(columns)
         return f"""
             SELECT {column_list}
-            FROM {{{{ conn.lrs_connection.schema }}}}.lrs_statement
+            FROM lrs_statement
             WHERE id > {{{{ task_instance.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0 }}}}
             ORDER BY id ASC
             LIMIT 500;
@@ -149,6 +151,7 @@ def lrs_statement_extractor():
     extract_statements = PostgresOperator(
         task_id='extract_statements',
         postgres_conn_id='lrs_connection',
+        hook_params={'options': '-c search_path=acid'},
         sql=select_query
     )
     
