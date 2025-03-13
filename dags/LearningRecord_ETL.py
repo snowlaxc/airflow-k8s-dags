@@ -109,7 +109,7 @@ def get_connection_metadata_from_variable() -> Dict:
     schedule_interval=None,
     catchup=False
 )
-def lrs_statement_extractor():
+def learning_record_etl():
     # 저장 경로 가져오기
     try:
         save_folder_path = Variable.get(SAVE_FOLDER_VARIABLE)
@@ -125,12 +125,33 @@ def lrs_statement_extractor():
     @task
     def get_table_info(conn_id: str = POSTGRES_CONN_ID) -> List[Any]:
         """테이블 구조 정보를 가져옵니다."""
+        metadata = get_metadata_from_variable()
+        table_name = metadata.get('table')
+        
         sql = f"""
             SELECT column_name, data_type 
             FROM information_schema.columns 
             WHERE table_schema = '{{schema}}' AND table_name = '{table_name}';
         """
-        return execute_sql(sql, conn_id=conn_id)
+        
+        # 직접 SQL 실행
+        hook = PostgresHook(postgres_conn_id=conn_id)
+        
+        # Connection 정보 확인
+        try:
+            conn = hook.get_connection(conn_id)
+        except Exception as e:
+            raise ValueError(f"Connection '{conn_id}'를 찾을 수 없습니다: {str(e)}")
+        
+        # schema 정보 가져오기
+        schema = conn.schema
+        if not schema:
+            schema = metadata.get('schema')
+            if not schema:
+                raise ValueError("schema 정보를 찾을 수 없습니다.")
+        
+        sql = sql.format(schema=schema)
+        return hook.get_records(sql)
     
     @task
     def get_type_info(**context) -> str:
@@ -408,4 +429,4 @@ def lrs_statement_extractor():
     process_result >> save_id
     process_result >> stats
 
-dag = lrs_statement_extractor()
+dag = learning_record_etl()
