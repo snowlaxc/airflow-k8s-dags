@@ -24,18 +24,12 @@ def execute_sql(sql: str, conn_id: str = 'lrs_connection') -> List[Any]:
     hook = PostgresHook(postgres_conn_id=conn_id)
     # Connection 정보에서 metadata 제외하여 psycopg2에 전달
     conn = hook.get_connection(conn_id)
-    try:
-        extra_dict = json.loads(conn.extra)
-        print(extra_dict)
-        print(type(extra_dict))
-        
-        print(extra_dict['metadata'])
-        print(type(extra_dict['metadata']))
-        # filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
-        # conn.extra = json.dumps(filtered_extra) if filtered_extra else None
-        # hook.connection = conn
-    except Exception as e:
-        print(e)
+
+    print(type(conn.extra))
+    # extra_dict = json.loads(conn.extra) if conn.extra else {}
+    # filtered_extra = {k: v for k, v in extra_dict.items() if k != 'metadata'}
+    # conn.extra = json.dumps(filtered_extra) if filtered_extra else None
+    # hook.connection = conn
     
     # # schema 정보 가져오기
     # schema = conn.schema
@@ -117,12 +111,16 @@ def lrs_statement_extractor():
         return [[json.dumps(columns)]]
 
     @task
-    def create_select_query(columns: List[str]) -> str:
+    def create_select_query(columns: List[str], **context) -> str:
+        ti = context['ti']
+        last_process_id = ti.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0
+
         column_list = ', '.join(columns)
+        
         return f"""
             SELECT {column_list}
             FROM {{schema}}.lrs_statement
-            WHERE id > {{{{ task_instance.xcom_pull(task_ids='update_last_processed_id', key='return_value') or 0 }}}}
+            WHERE id > { last_process_id }
             ORDER BY id ASC
             LIMIT 500;
         """
